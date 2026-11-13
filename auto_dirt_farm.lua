@@ -387,6 +387,7 @@ local STATE = {
     last_dialog_seq         = 0,
     runtime_hooks_installed = false,
     saving_storage          = false,
+    anti_take_active        = false,
     df_dropped_spots        = {},
     error_logs              = {},
     error_count             = 0,
@@ -1157,24 +1158,70 @@ local function moveSafeTo(tx, ty)
     if px == tx and py == ty then
         return true
     end
-    if FindPath then
-        local okChk, isBlocked = pcall(FindPath, tx, ty, true)
-        if okChk and isBlocked == true then
+    local pFn = FindPath or findPath
+    if not pFn then return false end
+
+    local CHUNK_LIMIT = 10 -- Batas per 10 block hop agar hemat CPU dan anti-freeze
+
+    while STATE.running do
+        local curX, curY = getPlayerTilePos()
+        if not curX or not curY then break end
+        if curX == tx and curY == ty then return true end
+
+        local dx = tx - curX
+        local dy = ty - curY
+        local dist = math.max(math.abs(dx), math.abs(dy))
+        if dist == 0 then return true end
+
+        local stepX, stepY
+        if dist <= CHUNK_LIMIT then
+            stepX, stepY = tx, ty
+        else
+            local ratio = CHUNK_LIMIT / dist
+            stepX = math.floor(curX + (dx * ratio) + 0.5)
+            stepY = math.floor(curY + (dy * ratio) + 0.5)
+            stepX = math.max(0, math.min(99, stepX))
+            stepY = math.max(0, math.min(53, stepY))
+        end
+
+        local okChk, isBlocked = pcall(pFn, stepX, stepY, true)
+        if okChk and isBlocked == true and dist <= CHUNK_LIMIT then
             return false
         end
-        local stepDist = (px and py) and math.max(math.abs(px - tx), math.abs(py - ty)) or 5
-        local ok = pcall(FindPath, tx, ty)
+
+        local stepDist = math.max(math.abs(curX - stepX), math.abs(curY - stepY))
+        local ok = pcall(pFn, stepX, stepY)
         if ok then
-            -- Langkah 1 tile sangat cepat agar break berjalan mulus tanpa patah-patah
-            local walkDelay = (stepDist <= 1) and math.min(CFG.delay_walk, 40)
-                or ((stepDist <= 2) and math.min(CFG.delay_walk, 75) or CFG.delay_walk)
-            safeSleep(walkDelay)
-            local npx, npy = getPlayerTilePos()
-            if npx and npy then
-                return (math.abs(npx - tx) <= 1 and math.abs(npy - ty) <= 1)
+            -- Tunggu pergerakan segmen hop per 10 block dengan polling ramah CPU
+            local waited = 0
+            local maxWait = math.max(80, math.min(500, stepDist * 45))
+            while waited < maxWait do
+                local nx, ny = getPlayerTilePos()
+                if nx and ny and math.abs(nx - stepX) <= 1 and math.abs(ny - stepY) <= 1 then
+                    break
+                end
+                safeSleep(25)
+                waited = waited + 25
             end
-            return true
+
+            local npx, npy = getPlayerTilePos()
+            if npx and npy and math.abs(npx - tx) <= 1 and math.abs(npy - ty) <= 1 then
+                return true
+            end
+
+            if dist > CHUNK_LIMIT then
+                safeSleep(35) -- Jeda ringan antar hop 10 block untuk melepas beban CPU & server
+            else
+                break
+            end
+        else
+            break
         end
+    end
+
+    local finalX, finalY = getPlayerTilePos()
+    if finalX and finalY then
+        return (math.abs(finalX - tx) <= 1 and math.abs(finalY - ty) <= 1)
     end
     return false
 end
@@ -1890,10 +1937,10 @@ openEditWorldEntryDialog = function(idx)
     if not entry or not growtopia or not growtopia.sendDialog then return end
     local dLines = {
         "set_default_color|`o",
-        string.format("add_label_with_icon|big|`wEdit World #%d``|left|2|", idx),
+        string.format("add_label_with_icon|big|`wEdit World DF #%d``|left|2|", idx),
         "add_spacer|small|",
         string.format("add_text_input|edit_w_name|Nama World|%s|24|", tostring(entry.name or "")),
-        string.format("add_text_input|edit_w_door|Door ID (Kosong = White Door)|%s|20|", tostring(entry.door or "")),
+        string.format("add_text_input|edit_w_door|Door ID (Kosong = White Door)|%s|32|", tostring(entry.door or "")),
         "add_spacer|small|",
         "add_button|save_w_edit|`2Simpan Perubahan|noflags|0|0|",
         "add_button|del_w_edit|`4Hapus World Ini|noflags|0|0|",
@@ -1902,31 +1949,66 @@ openEditWorldEntryDialog = function(idx)
     pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
 end
 
-openWorldListManagerDialog = function()
+openWorldListManagerDialog = function(fmt)
     if not growtopia or not growtopia.sendDialog then return false end
-    local dLines = {
-        "set_default_color|`o",
-        string.format("add_label_with_icon|big|`wList World DF (%d)``|left|2|", #CFG.world_list),
-        "add_textbox|`oKelola daftar world DF: tekan `9Edit`o atau `4Hapus`o di tiap world.|left|",
-    }
-    if #CFG.world_list == 0 then
-        table.insert(dLines, "add_spacer|small|")
-        table.insert(dLines, "add_textbox|`4List world masih kosong. Tambah world lewat kolom di bawah!|left|")
-    else
-        for i, entry in ipairs(CFG.world_list) do
-            local tag = getWorldEntryStatusTag(entry)
-            local st = (tag == "DONE") and "`2[DONE]" or ((tag == "PROSES") and "`6[PROSES]" or "`9[ANTRI]")
-            local doorTxt = (entry.door and entry.door ~= "") and ("ID: " .. tostring(entry.door)) or "Public"
-            table.insert(dLines, "add_spacer|small|")
-            table.insert(dLines, string.format("add_textbox|`w%d. %s `o[%s] %s|left|", i, tostring(entry.name), doorTxt, st))
-            table.insert(dLines, string.format("add_button|boren_wedit_%d|`9Edit #%d|noflags|0|0|", i, i))
-            table.insert(dLines, string.format("add_button|boren_whapus_%d|`4Hapus #%d|noflags|0|0|", i, i))
+    fmt = fmt or "colon"
+
+    local copyLines = {}
+    for _, e in ipairs(CFG.world_list) do
+        local door = e.door or ""
+        if fmt == "colon" then
+            table.insert(copyLines, (door ~= "") and (e.name .. ":" .. door) or e.name)
+        elseif fmt == "pipe" then
+            table.insert(copyLines, (door ~= "") and (e.name .. "|" .. door) or e.name)
+        else
+            table.insert(copyLines, e.name)
         end
     end
-    table.insert(dLines, "add_spacer|small|")
-    table.insert(dLines, "add_text_input|boren_new_w|Tambah World Baru||24|")
-    table.insert(dLines, "add_text_input|boren_new_d|Door ID (Opsional)||20|")
-    table.insert(dLines, "add_button|boren_wadd|`2+ Tambah World|noflags|0|0|")
+    local rawCopy = table.concat(copyLines, "\n")
+    if ImGui and ImGui.SetClipboardText and rawCopy ~= "" then
+        pcall(ImGui.SetClipboardText, rawCopy)
+    end
+
+    local dLines = {
+        "set_default_color|`o",
+        string.format("add_label_with_icon|big|`wKelola, Salin & Tempel World DF (%d)``|left|2|", #CFG.world_list),
+        "add_textbox|`oDi sini Anda bisa salin antrean, tempel banyak world baru, dan edit/hapus world.|left|",
+        "add_spacer|small|",
+
+        -- Bagian 1: Salin Semua World
+        "add_textbox|`2[1. Salin Semua World DF ke Clipboard]|left|",
+        string.format("add_text_input|boren_wcopy_box|Salin Antrean|%s|9999|", rawCopy),
+        "add_button|boren_btn_wfmt_colon|Format Titik Dua (:)|noflags|0|0|",
+        "add_button|boren_btn_wfmt_pipe|Format Garis (|)|noflags|0|0|",
+        "add_button|boren_btn_wfmt_name|Hanya Nama World|noflags|0|0|",
+        "add_spacer|small|",
+
+        -- Bagian 2: Tempel Banyak / Tambah World
+        "add_textbox|`2[2. Tempel / Tambah World ke Antrean]|left|",
+        "add_textbox|`eTempel 1 atau banyak world (Format: WORLD:ID / WORLD|ID / WORLD). Bebas koma, spasi, enter.|left|",
+        "add_text_input|boren_wpaste_raw|Tempel World di sini:||9999|",
+        "add_checkbox|boren_wpaste_replace|Ganti semua antrean (Replace)|0|",
+        "add_button|boren_submit_wpaste|`2+ Tempel / Tambah ke Antrean|noflags|0|0|",
+        "add_spacer|small|",
+
+        -- Bagian 3: Daftar World & Aksi Edit/Hapus
+        string.format("add_textbox|`2[3. Daftar Antrean Saat Ini (%d World)]|left|", #CFG.world_list)
+    }
+
+    if #CFG.world_list == 0 then
+        table.insert(dLines, "add_textbox|`4(Antrean World DF masih kosong. Silakan tempel di atas!)|left|")
+    else
+        for i, e in ipairs(CFG.world_list) do
+            local tag = getWorldEntryStatusTag(e)
+            local st = (tag == "DONE") and "`2[DONE]" or ((tag == "PROSES") and "`6[PROSES]" or "`9[ANTRI]")
+            local d = (e.door and e.door ~= "") and e.door or "-"
+            table.insert(dLines, string.format("add_textbox|`w%d. `9%s `o[Door: %s] %s|left|", i, e.name, d, st))
+            table.insert(dLines, string.format("add_button|boren_wedit_%d|Edit|noflags|0|0|", i))
+            table.insert(dLines, string.format("add_button|boren_whapus_%d|Hapus|noflags|0|0|", i))
+            table.insert(dLines, "add_spacer|small|")
+        end
+    end
+
     table.insert(dLines, "end_dialog|boren_world_mgr|Tutup||")
     pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
     return true
@@ -2190,16 +2272,41 @@ local function onSendPacketDialogHook(ptype, pkt)
         local fields = parseDialogReturnFields(pkt)
         local dName = fields.dialog_name or ""
 
-        if dName == "boren_world_mgr" then
+        if dName == "boren_world_mgr" or dName == "boren_paste_mgr" or dName == "boren_copy_mgr" then
             local btn = fields.buttonClicked or ""
             local delIdx = btn:match("^boren_whapus_(%d+)$")
             local editIdx = btn:match("^boren_wedit_(%d+)$")
-            if delIdx then
-                local okDel, msg = deleteWorldEntryAt(tonumber(delIdx))
+
+            if btn == "boren_btn_wfmt_colon" or btn == "boren_btn_fmt_colon" then
+                openWorldListManagerDialog("colon")
+                return true
+            elseif btn == "boren_btn_wfmt_pipe" or btn == "boren_btn_fmt_pipe" then
+                openWorldListManagerDialog("pipe")
+                return true
+            elseif btn == "boren_btn_wfmt_name" or btn == "boren_btn_fmt_name" then
+                openWorldListManagerDialog("name_only")
+                return true
+            elseif btn == "boren_submit_wpaste" or btn == "boren_submit_paste" then
+                local raw = pkt:match("boren_wpaste_raw|(.-)\nboren_wpaste_replace|")
+                    or pkt:match("boren_paste_raw|(.-)\nboren_paste_replace|")
+                    or pkt:match("boren_wpaste_raw|(.-)\nbuttonClicked|")
+                    or pkt:match("boren_paste_raw|(.-)\nbuttonClicked|")
+                    or fields.boren_wpaste_raw or fields.boren_paste_raw or ""
+                local isReplace = (fields.boren_wpaste_replace == "1" or fields.boren_paste_replace == "1")
+                local added, dups, ign, msg = parseAndValidateWorldBatch(raw, isReplace)
+                if updateWorldDisplayList then updateWorldDisplayList() end
                 if sendNotification then pcall(sendNotification, msg) end
-                if okDel then openWorldListManagerDialog() end
+                openWorldListManagerDialog()
+                return true
+            elseif delIdx then
+                local okDel, msg = deleteWorldEntryAt(tonumber(delIdx))
+                if updateWorldDisplayList then updateWorldDisplayList() end
+                if sendNotification then pcall(sendNotification, msg) end
+                openWorldListManagerDialog()
+                return true
             elseif editIdx then
                 openEditWorldEntryDialog(tonumber(editIdx))
+                return true
             elseif btn == "boren_wadd" then
                 local added = addManualWorldsFromString(fields.boren_new_w or "", fields.boren_new_d or "", false)
                 if updateWorldDisplayList then updateWorldDisplayList() end
@@ -2209,6 +2316,7 @@ local function onSendPacketDialogHook(ptype, pkt)
                     if sendNotification then pcall(sendNotification, "Isi kolom Tambah World Baru terlebih dulu!") end
                 end
                 openWorldListManagerDialog()
+                return true
             end
             return true
         end
@@ -2417,6 +2525,17 @@ local function onSendPacketDialogHook(ptype, pkt)
     end
 end
 
+local function onSendPacketRawCollectHook(pkt)
+    if type(pkt) ~= "table" then return false end
+    local pktType = tonumber(pkt.type)
+    if pktType == 11 then
+        if STATE.anti_take_active then
+            return true -- Blokir paket collect (Packet 11) agar item/seed/block yang di-drop tidak tersedot kembali!
+        end
+    end
+    return false
+end
+
 local function ensureRuntimeHooks()
     if STATE.runtime_hooks_installed then return end
     STATE.runtime_hooks_installed = true
@@ -2424,9 +2543,12 @@ local function ensureRuntimeHooks()
     OnVariant = onVariantDialogHook
     onSendPacket = onSendPacketDialogHook
     OnSendPacket = onSendPacketDialogHook
+    onSendPacketRaw = onSendPacketRawCollectHook
+    OnSendPacketRaw = onSendPacketRawCollectHook
     if addHook then
         pcall(addHook, onVariantDialogHook, "onvariant")
         pcall(addHook, onSendPacketDialogHook, "onsendpacket")
+        pcall(addHook, onSendPacketRawCollectHook, "onsendpacketraw")
     end
     if applyHook then
         pcall(applyHook)
@@ -2456,10 +2578,16 @@ local function dropItemSafe(itemID, count)
     end
     local wantDrop = math.min(count, beforeCnt)
 
+    ensureRuntimeHooks()
+    local prevAntiTake = STATE.anti_take_active
+    STATE.anti_take_active = true
+    setAutoCollectActive(false)
+
     if growtopia and growtopia.confirmDropItem then
         pcall(growtopia.confirmDropItem, itemID, wantDrop)
         local droppedNative, afterNative = waitInvDecrease(itemID, beforeCnt, 1400)
         if droppedNative > 0 then
+            STATE.anti_take_active = prevAntiTake
             return true, droppedNative, afterNative
         end
     end
@@ -2467,6 +2595,7 @@ local function dropItemSafe(itemID, count)
         pcall(growtopia.dropItem, itemID)
         local droppedOne, afterOne = waitInvDecrease(itemID, beforeCnt, 900)
         if droppedOne > 0 then
+            STATE.anti_take_active = prevAntiTake
             return true, droppedOne, afterOne
         end
     end
@@ -2502,6 +2631,7 @@ local function dropItemSafe(itemID, count)
     end
 
     STATE.suppress_dialog = prevSuppress
+    STATE.anti_take_active = prevAntiTake
     return (dropped > 0), dropped, afterCnt
 end
 
@@ -2884,6 +3014,11 @@ local function countStacksAtTile(tx, ty)
 end
 
 local function dropItemsAtOpenSpots(itemsToSave, anchorX, anchorY, minOffset, maxOffset, forceAll, isLocalDF)
+    ensureRuntimeHooks()
+    local prevAntiTake = STATE.anti_take_active
+    STATE.anti_take_active = true
+    setAutoCollectActive(false)
+
     -- Scan spot drop dari TERJAUH ke TERDEKAT (mundur menuju anchor) agar karakter tidak menginjak hasil drop
     local candidateSpots = {}
     for offset = maxOffset, minOffset, -1 do
@@ -2962,6 +3097,7 @@ local function dropItemsAtOpenSpots(itemsToSave, anchorX, anchorY, minOffset, ma
         moveSafeTo(anchorX, anchorY)
         safeSleep(150)
     end
+    STATE.anti_take_active = prevAntiTake
 end
 
 local function hasAnyDroppedBackupInDF()
@@ -3151,6 +3287,8 @@ local function testDropCustomSaveItem()
 
     local function execDrop()
         STATE.saving_storage = true
+        local prevAntiTake = STATE.anti_take_active
+        STATE.anti_take_active = true
         setAutoCollectActive(false)
         safeSleep(150)
 
@@ -3159,6 +3297,7 @@ local function testDropCustomSaveItem()
 
         -- Jangan nyalakan Auto Collect langsung di tempat drop supaya hasil tes drop tidak tersedot balik
         STATE.saving_storage = false
+        STATE.anti_take_active = prevAntiTake
 
         if okDrop and dropped > 0 then
             local msg = string.format("Berhasil Drop %dx %s! (BP: %d -> %d) [Collect OFF]", dropped, itemName, beforeBP, afterBP)
@@ -3356,6 +3495,10 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
         end
         if not hasExcess then return end
 
+        local prevAntiTake = STATE.anti_take_active
+        STATE.anti_take_active = true
+        setAutoCollectActive(false)
+
         local candidateSpots = {}
         -- Urut terjauh ke terdekat (kanan mundur ke kiri, lalu kiri mundur ke kanan) agar langkah selanjutnya selalu menjauh dari hasil drop
         for offset = 12, 1, -1 do
@@ -3420,6 +3563,7 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
                 end
             end
         end
+        STATE.anti_take_active = prevAntiTake
     end
 
     dropAllToolExcessInStorage()
@@ -5257,17 +5401,15 @@ local function registerNativeBorenStoreUI()
     uiWorld:addLabel("Daftar World:")
     uiWorld:addInputString("Nama World", CFG.manual_world_text, "World", "WORLD1", "Public", "df_manual_world_input")
     uiWorld:addInputString("Door ID (Opsional)", CFG.manual_door_text, "Door ID", "Kosong = White Door", "DoorFront", "df_manual_door_input")
-    uiWorld:addButton("+ Tambah 1 World", "df_btn_add_world")
-    uiWorld:addButton("+ World Sekarang", "df_btn_add_cur_world")
-    uiWorld:addButton("📋 Tempel Banyak World (Quick Paste)", "df_btn_paste_worlds")
-    uiWorld:addButton("📋 Lihat & Salin Semua World", "df_btn_copy_all_worlds")
-    uiWorld:addButton("Kelola / Edit List World", "df_btn_view_worlds")
-    uiWorld:addButton("Hapus Semua World", "df_btn_clear_worlds")
+    uiWorld:addButton("+ Tambah World ke Antrean", "df_btn_add_world")
+    uiWorld:addButton("+ Pakai World Sekarang", "df_btn_add_cur_world")
+    uiWorld:addButton("📋 Kelola / Edit, Salin & Tempel World", "df_btn_view_worlds")
+    uiWorld:addButton("🗑️ Kosongkan Semua World", "df_btn_clear_worlds")
     uiWorld:addDivider()
-    uiWorld:addLabel("File Cadangan (Folder Download HP):")
+    uiWorld:addLabel("Cadangan File (Folder Download HP):")
     uiWorld:addDisplayList("Status File Download", "Default", "df_file_info_list")
-    uiWorld:addButton("📥 Simpan ke Folder Download", "df_btn_save_worlds")
-    uiWorld:addButton("📤 Muat dari Folder Download", "df_btn_load_worlds")
+    uiWorld:addButton("📥 Simpan Antrean ke Download", "df_btn_save_worlds")
+    uiWorld:addButton("📤 Muat Antrean dari Download", "df_btn_load_worlds")
     uiWorld:addDisplayList("List World DF", "Default", "df_world_display_list")
     uiWorld:addDivider()
     uiWorld:addLabel("Random World:")
@@ -5478,52 +5620,10 @@ local function handleUIValue(vtype, name, value)
         STATE.buf_world_name = ""
         updateWorldDisplayList()
         if sendNotification then pcall(sendNotification, "List world dikosongkan!") end
-    elseif name == "df_btn_view_worlds" then
+    elseif name == "df_btn_view_worlds" or name == "df_btn_paste_worlds" or name == "df_btn_copy_all_worlds" then
         ensureRuntimeHooks()
         updateWorldDisplayList()
-        local curW = getWorldNameSafe()
-        local openedInteractive = false
-        if curW ~= "" and curW ~= "EXIT" then
-            openedInteractive = openWorldListManagerDialog()
-        end
-        local lines = {}
-        for i, entry in ipairs(CFG.world_list) do
-            local st = getWorldEntryStatusTag(entry)
-            local doorTxt = (entry.door and entry.door ~= "") and (" | ID: " .. tostring(entry.door)) or " | Public"
-            table.insert(lines, string.format("%d. %s [%s]%s", i, tostring(entry.name), st, doorTxt))
-        end
-        local msg = (#lines > 0) and table.concat(lines, "\n") or "List world masih kosong. Isi Nama World lalu klik '+ Tambah World ke List'."
-        if sendNotification then pcall(sendNotification, string.format("Total World DF: %d", #CFG.world_list)) end
-        if (not openedInteractive) and sendDialog then
-            pcall(sendDialog, {
-                title = "List World DF (" .. tostring(#CFG.world_list) .. ")",
-                alias = "boren_df_world_list",
-                message = msg .. "\n\nTips: Klik tombol 'Lihat / Kelola List World' saat berada di dalam world untuk langsung Edit atau Hapus tiap world!",
-                confirm = "OK"
-            })
-        end
-    elseif name == "df_btn_paste_worlds" then
-        ensureRuntimeHooks()
-        local curW = getWorldNameSafe()
-        local opened = false
-        if curW ~= "" and curW ~= "EXIT" then
-            opened = openPasteWorldListDialog()
-        end
-        if not opened then
-            if sendNotification then pcall(sendNotification, "Masuk ke world dulu untuk membuka dialog Tempel World!") end
-        end
-    elseif name == "df_btn_copy_all_worlds" then
-        ensureRuntimeHooks()
-        local curW = getWorldNameSafe()
-        local opened = false
-        if curW ~= "" and curW ~= "EXIT" then
-            opened = openCopyAllWorldsDialog("colon")
-        end
-        if not opened then
-            local txt = formatWorldListAsText(":")
-            if ImGui and ImGui.SetClipboardText and txt ~= "" then pcall(ImGui.SetClipboardText, txt) end
-            if sendNotification then pcall(sendNotification, "Daftar World:\n" .. (txt ~= "" and txt or "(kosong)")) end
-        end
+        openWorldListManagerDialog()
     elseif name == "df_world_file" then
         local f = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
         if f ~= "" then
