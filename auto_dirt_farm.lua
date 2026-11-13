@@ -37,6 +37,14 @@ local function loadPref(key, default)
     return default
 end
 
+local function setPref(key, val)
+    if not saved or not saved.set then return end
+    pcall(function()
+        saved:set(key, val)
+        if saved.save then saved:save() end
+    end)
+end
+
 local function savePrefs(cfg_table)
     if not saved or not saved.set or not saved.save then return end
     pcall(function()
@@ -283,6 +291,8 @@ local CFG = {
     random_length       = tonumber(loadPref("random_length", 6)) or 6,
     random_use_numbers  = loadPref("random_use_numbers", false),
     random_target_count = tonumber(loadPref("random_target_count", 5)) or 5,
+    world_folder_mode   = tostring(loadPref("world_folder_mode", "download") or "download"),
+    world_custom_folder = tostring(loadPref("world_custom_folder", "") or ""),
     world_file_name     = tostring(loadPref("world_file_name", "boren_df_worlds.txt") or "boren_df_worlds.txt"),
     world_list          = parseSavedWorldList(),
     manual_world_text   = tostring(loadPref("manual_world_text", "") or ""),
@@ -393,7 +403,10 @@ local STATE = {
 
 local refreshNativeDisplayLists -- forward declaration
 local updatePowerStatusList     -- forward declaration
+local updateWorldDisplayList    -- forward declaration
+local updateFileInfoDisplayList -- forward declaration
 local ensureOnlineInWorld       -- forward declaration
+local openFileBrowserManagerDialog -- forward declaration
 
 local function isErrorMessage(msg)
     local low = tostring(msg or ""):lower()
@@ -502,15 +515,165 @@ local function addManualWorldsFromString(rawWorldStr, defaultDoorStr, clearExist
     return addedCount
 end
 
+local FOLDER_PRESET_DEFS = {
+    { id = "download",   label = "Download",   desc = "Folder Download HP",       full = "/storage/emulated/0/Download/" },
+    { id = "documents",  label = "Documents",  desc = "Folder Documents HP",      full = "/storage/emulated/0/Documents/" },
+    { id = "script_gl",  label = "Script GL",  desc = "Folder Script GL (Media)", full = "/storage/emulated/0/Android/media/launcher.powerkuy.growlauncher/ScriptLua/" },
+    { id = "script_gl6", label = "GL Files",   desc = "Folder Script GL (Files)", full = "/storage/emulated/0/Android/data/launcher.powerkuy.growlauncher/files/ScriptLua/" },
+    { id = "internal",   label = "Internal SD",desc = "Root Memori Internal HP",  full = "/storage/emulated/0/" },
+    { id = "custom",     label = "Custom",     desc = "Custom Folder Path",       full = "" }
+}
+
+local function getFolderPresetInfo(modeId)
+    modeId = tostring(modeId or "download")
+    for _, p in ipairs(FOLDER_PRESET_DEFS) do
+        if p.id == modeId then return p end
+    end
+    return FOLDER_PRESET_DEFS[1]
+end
+
+local function isSystemWindows()
+    return (package.config and package.config:sub(1, 1) == "\\")
+end
+
+-- Resolve path file .txt menjadi full absolute path di HP / PC
+local function resolveWorldFilePath(rawFileName, optFolderMode, optCustomDir)
+    local fn = tostring(rawFileName or CFG.world_file_name or "boren_df_worlds.txt"):gsub("^%s+", ""):gsub("%s+$", "")
+    if fn == "" then fn = "boren_df_worlds.txt" end
+    if not fn:lower():match("%.txt$") then fn = fn .. ".txt" end
+
+    -- Jika sudah merupakan full path (/ atau C:\ atau D:\)
+    if fn:sub(1, 1) == "/" or fn:match("^%a:[/\\]") then
+        local dir = fn:match("^(.*[/\\])") or ""
+        local nameOnly = fn:sub(#dir + 1)
+        return fn, dir, nameOnly
+    end
+
+    local mode = optFolderMode or CFG.world_folder_mode or "download"
+    local dir = ""
+
+    if isSystemWindows() then
+        if mode == "custom" and (optCustomDir or CFG.world_custom_folder or "") ~= "" then
+            dir = tostring(optCustomDir or CFG.world_custom_folder)
+        else
+            dir = ""
+        end
+    else
+        local pInfo = getFolderPresetInfo(mode)
+        if mode == "custom" then
+            dir = tostring(optCustomDir or CFG.world_custom_folder or "")
+        else
+            dir = pInfo.full or "/storage/emulated/0/Download/"
+        end
+    end
+
+    if dir ~= "" and not (dir:sub(-1) == "/" or dir:sub(-1) == "\\") then
+        dir = dir .. "/"
+    end
+
+    return dir .. fn, dir, fn
+end
+
+-- Cek apakah file benar-benar ada di storage HP/PC beserta info jumlah baris/world
+local function checkWorldFileStatus(fullPath)
+    if not io or not io.open then
+        return false, "I/O module tidak aktif", 0
+    end
+    local okF, fh = pcall(io.open, fullPath, "r")
+    if not okF or not fh then
+        return false, "File belum ada", 0
+    end
+    local worldCnt = 0
+    for line in fh:lines() do
+        local cl = line:gsub("%s+", "")
+        if cl ~= "" and not cl:match("^#") and not cl:match("^//") then
+            worldCnt = worldCnt + 1
+        end
+    end
+    fh:close()
+    return true, string.format("Ada (%d world)", worldCnt), worldCnt
+end
+
+local function recordFileInHistory(fileName)
+    if not fileName or fileName == "" then return end
+    local cur = tostring(loadPref("file_history_str", "") or "")
+    local list = {}
+    local seen = { [fileName] = true }
+    table.insert(list, fileName)
+    for name in cur:gmatch("[^;\r\n]+") do
+        local c = name:gsub("^%s+", ""):gsub("%s+$", "")
+        if c ~= "" and not seen[c] then
+            seen[c] = true
+            table.insert(list, c)
+            if #list >= 12 then break end
+        end
+    end
+    setPref("file_history_str", table.concat(list, ";"))
+end
+
+local function parseSavedFileHistory()
+    local hist = tostring(loadPref("file_history_str", "") or "")
+    local list = {}
+    for h in hist:gmatch("[^;\r\n]+") do
+        local hc = h:gsub("^%s+", ""):gsub("%s+$", "")
+        if hc ~= "" then table.insert(list, hc) end
+    end
+    return list
+end
+
+-- Scan file .txt yang ada di folder HP (via popen atau history fallback)
+local function scanFolderTxtFiles(dirPath)
+    local files = {}
+    local seen = {}
+    local targetDir = dirPath or ""
+
+    if io and io.popen and targetDir ~= "" then
+        local cmd = isSystemWindows()
+            and ('dir /b /a-d "' .. targetDir:gsub("/", "\\") .. '\\*.txt" 2>nul')
+            or ('ls -1 "' .. targetDir .. '" 2>/dev/null')
+        local okP, pipe = pcall(io.popen, cmd)
+        if okP and pipe then
+            for line in pipe:lines() do
+                local clean = line:gsub("[\r\n]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+                if clean:lower():match("%.txt$") and not seen[clean] then
+                    seen[clean] = true
+                    local okF, msg, cnt = checkWorldFileStatus(targetDir .. clean)
+                    table.insert(files, { name = clean, path = targetDir .. clean, count = cnt, info = msg, exists = okF })
+                end
+            end
+            pipe:close()
+        end
+    end
+
+    local checkCandidates = { CFG.world_file_name or "boren_df_worlds.txt" }
+    for _, h in ipairs(parseSavedFileHistory()) do
+        table.insert(checkCandidates, h)
+    end
+
+    for _, fn in ipairs(checkCandidates) do
+        if not fn:lower():match("%.txt$") then fn = fn .. ".txt" end
+        if not seen[fn] then
+            local testP = (targetDir ~= "") and (targetDir .. fn) or fn
+            local okF, msg, cnt = checkWorldFileStatus(testP)
+            if okF then
+                seen[fn] = true
+                table.insert(files, { name = fn, path = testP, count = cnt, info = msg, exists = true })
+            end
+        end
+    end
+
+    return files, targetDir
+end
+
 local function saveWorldListToStorage(showDialogPopup)
     persistConfig()
     local exportTxt = formatWorldListAsText(":")
-    local fName = tostring(CFG.world_file_name or "boren_df_worlds.txt"):gsub("^%s+", ""):gsub("%s+$", "")
-    if fName == "" then fName = "boren_df_worlds.txt" end
+    local fullPath, dir, fName = resolveWorldFilePath()
+    recordFileInHistory(fName)
 
     local savedFile = false
     if io and io.open then
-        local okF, fh = pcall(io.open, fName, "w")
+        local okF, fh = pcall(io.open, fullPath, "w")
         if okF and fh then
             pcall(function()
                 fh:write(exportTxt .. (exportTxt ~= "" and "\n" or ""))
@@ -520,31 +683,33 @@ local function saveWorldListToStorage(showDialogPopup)
         end
     end
     if writeToLocal then
+        pcall(writeToLocal, fullPath, exportTxt)
         pcall(writeToLocal, fName, exportTxt)
     end
 
-    local summary = string.format("Tersimpan %d world ke %s & Preferences (format world:id).", #CFG.world_list, savedFile and fName or "Preferences")
+    local summary = string.format("Tersimpan %d world ke %s & Preferences.", #CFG.world_list, savedFile and fullPath or fName)
     addLog(summary)
     if sendNotification then pcall(sendNotification, summary) end
     if showDialogPopup and sendDialog then
         pcall(sendDialog, {
             title = "Save List World (" .. tostring(#CFG.world_list) .. ")",
             alias = "boren_df_save_worlds",
-            message = summary .. "\n\nIsi (world:id):\n" .. (exportTxt ~= "" and exportTxt or "(kosong)"),
+            message = summary .. "\n\nPath File HP:\n" .. fullPath .. "\n\nIsi (world:id):\n" .. (exportTxt ~= "" and exportTxt or "(kosong)"),
             confirm = "OK"
         })
     end
+    if updateFileInfoDisplayList then pcall(updateFileInfoDisplayList) end
     return true, summary
 end
 
 local function loadWorldListFromStorage(replaceExisting)
-    local fName = tostring(CFG.world_file_name or "boren_df_worlds.txt"):gsub("^%s+", ""):gsub("%s+$", "")
-    if fName == "" then fName = "boren_df_worlds.txt" end
+    local fullPath, dir, fName = resolveWorldFilePath()
+    recordFileInHistory(fName)
 
     local rawData = ""
     local sourceLabel = "Preferences"
     if io and io.open then
-        local okF, fh = pcall(io.open, fName, "r")
+        local okF, fh = pcall(io.open, fullPath, "r")
         if okF and fh then
             local okR, content = pcall(function()
                 local txt = fh:read("*a")
@@ -553,8 +718,19 @@ local function loadWorldListFromStorage(replaceExisting)
             end)
             if okR and type(content) == "string" and content:gsub("%s+", "") ~= "" then
                 rawData = content
-                sourceLabel = fName
+                sourceLabel = fullPath
             end
+        end
+    end
+
+    if rawData == "" and io and io.open and dir ~= "" then
+        local okFb, fhFb = pcall(io.open, fName, "r")
+        if okFb and fhFb then
+            pcall(function()
+                rawData = fhFb:read("*a")
+                fhFb:close()
+            end)
+            if rawData ~= "" then sourceLabel = fName end
         end
     end
 
@@ -564,8 +740,9 @@ local function loadWorldListFromStorage(replaceExisting)
     end
 
     if rawData:gsub("%s+", "") == "" then
-        local emptyMsg = "Data Save World belum ada di " .. fName .. " maupun Preferences!"
+        local emptyMsg = "Data Save World belum ada di:\n" .. fullPath .. "\nmaupun di Preferences!"
         if sendNotification then pcall(sendNotification, emptyMsg) end
+        if updateFileInfoDisplayList then updateFileInfoDisplayList() end
         return 0, emptyMsg
     end
 
@@ -577,6 +754,7 @@ local function loadWorldListFromStorage(replaceExisting)
     local msg = string.format("Load %d world dari %s (DONE: %d, ANTRI: %d).", count, sourceLabel, doneCnt, antriCnt)
     addLog(msg)
     if sendNotification then pcall(sendNotification, msg) end
+    if updateFileInfoDisplayList then updateFileInfoDisplayList() end
     return count, msg
 end
 
@@ -1650,6 +1828,58 @@ openTrashListManagerDialog = function()
     return true
 end
 
+openFileBrowserManagerDialog = function()
+    if not growtopia or not growtopia.sendDialog then return false end
+    local fullPath, dir, currentFn = resolveWorldFilePath()
+    local files, targetDir = scanFolderTxtFiles(dir)
+    local pInfo = getFolderPresetInfo(CFG.world_folder_mode)
+    local okF, statusMsg = checkWorldFileStatus(fullPath)
+
+    local dLines = {
+        "set_default_color|`o",
+        "add_label_with_icon|big|`wFile & Folder Manager DF``|left|1240|",
+        string.format("add_textbox|`oFolder HP: `2%s `o(`w%s`o)|left|", (targetDir ~= "" and targetDir or "(Folder Game/Current)"), pInfo.label),
+        string.format("add_textbox|`oFile Aktif: `2%s `o| Status: %s|left|", currentFn, okF and ("`2" .. statusMsg) or ("`4" .. statusMsg)),
+        string.format("add_textbox|`9Path: `o%s|left|", fullPath),
+        "add_spacer|small|",
+        "add_textbox|`wPilih Preset Folder HP:|left|",
+        "add_button|boren_fdir_download|`9[1. Download]|noflags|0|0|",
+        "add_button|boren_fdir_documents|`9[2. Documents]|noflags|0|0|",
+        "add_button|boren_fdir_scriptgl|`9[3. Script GL]|noflags|0|0|",
+        "add_button|boren_fdir_internal|`9[4. Internal SD]|noflags|0|0|",
+        "add_button|boren_fdir_custom|`9[5. Custom]|noflags|0|0|",
+        "add_spacer|small|",
+    }
+
+    if #files == 0 then
+        table.insert(dLines, "add_textbox|`4Tidak ada file .txt terdeteksi di folder ini.|left|")
+        table.insert(dLines, "add_textbox|`oKetik nama file baru di bawah lalu klik Simpan File.|left|")
+    else
+        table.insert(dLines, string.format("add_textbox|`wFile .txt Ditemukan (%d file di folder ini):|left|", #files))
+        for i, fInfo in ipairs(files) do
+            local isCur = (fInfo.name == currentFn)
+            local icon = isCur and "`2▶ " or "`w"
+            table.insert(dLines, "add_spacer|small|")
+            table.insert(dLines, string.format("add_textbox|%s%d. %s `o(%s)|left|", icon, i, fInfo.name, fInfo.info or ""))
+            table.insert(dLines, string.format("add_button|boren_fpick_%d|`2Pilih & Load #%d|noflags|0|0|", i, i))
+        end
+    end
+
+    table.insert(dLines, "add_spacer|small|")
+    table.insert(dLines, string.format("add_text_input|boren_input_fname|Nama File (.txt)|%s|32|", currentFn))
+    if CFG.world_folder_mode == "custom" then
+        table.insert(dLines, string.format("add_text_input|boren_input_fdir|Custom Path Folder|%s|80|", CFG.world_custom_folder or ""))
+    end
+    table.insert(dLines, "add_spacer|small|")
+    table.insert(dLines, "add_button|boren_fbtn_save|`2Simpan ke File Ini|noflags|0|0|")
+    table.insert(dLines, "add_button|boren_fbtn_load|`9Load dari File Ini|noflags|0|0|")
+    table.insert(dLines, "add_button|boren_fbtn_rescan|`6Scan Ulang Folder|noflags|0|0|")
+    table.insert(dLines, "end_dialog|boren_file_mgr|Tutup||")
+
+    pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
+    return true
+end
+
 local function openMiniConsoleDialog(errorsOnly)
     local onlyErr = (errorsOnly == true)
     local srcList = onlyErr and STATE.error_logs or STATE.logs
@@ -1851,6 +2081,68 @@ local function onSendPacketDialogHook(ptype, pkt)
                 STATE.error_logs = {}
                 STATE.error_count = 0
                 openMiniConsoleDialog(STATE.console_errors_only)
+            end
+            return true
+        end
+
+        if dName == "boren_file_mgr" then
+            local btn = fields.buttonClicked or ""
+            local pickIdx = btn:match("^boren_fpick_(%d+)$")
+            local dirPreset = btn:match("^boren_fdir_(.+)$")
+
+            if dirPreset then
+                CFG.world_folder_mode = dirPreset
+                persistConfig()
+                if updateFileInfoDisplayList then pcall(updateFileInfoDisplayList) end
+                if sendNotification then pcall(sendNotification, "Folder diubah -> " .. getFolderPresetInfo(dirPreset).label) end
+                openFileBrowserManagerDialog()
+            elseif pickIdx then
+                local idx = tonumber(pickIdx)
+                local fullPath, dir = resolveWorldFilePath()
+                local files = scanFolderTxtFiles(dir)
+                if idx and files[idx] then
+                    CFG.world_file_name = files[idx].name
+                    persistConfig()
+                    loadWorldListFromStorage(true)
+                    if updateWorldDisplayList then pcall(updateWorldDisplayList) end
+                    if updateFileInfoDisplayList then pcall(updateFileInfoDisplayList) end
+                    if sendNotification then pcall(sendNotification, "File dimuat: " .. files[idx].name) end
+                end
+                openFileBrowserManagerDialog()
+            elseif btn == "boren_fbtn_save" then
+                local newFname = fields.boren_input_fname or ""
+                if newFname ~= "" then
+                    CFG.world_file_name = newFname:gsub("^%s+", ""):gsub("%s+$", "")
+                end
+                if fields.boren_input_fdir and fields.boren_input_fdir ~= "" then
+                    CFG.world_custom_folder = fields.boren_input_fdir:gsub("^%s+", ""):gsub("%s+$", "")
+                end
+                saveWorldListToStorage(false)
+                if updateFileInfoDisplayList then pcall(updateFileInfoDisplayList) end
+                openFileBrowserManagerDialog()
+            elseif btn == "boren_fbtn_load" then
+                local newFname = fields.boren_input_fname or ""
+                if newFname ~= "" then
+                    CFG.world_file_name = newFname:gsub("^%s+", ""):gsub("%s+$", "")
+                end
+                if fields.boren_input_fdir and fields.boren_input_fdir ~= "" then
+                    CFG.world_custom_folder = fields.boren_input_fdir:gsub("^%s+", ""):gsub("%s+$", "")
+                end
+                persistConfig()
+                loadWorldListFromStorage(true)
+                if updateWorldDisplayList then pcall(updateWorldDisplayList) end
+                if updateFileInfoDisplayList then updateFileInfoDisplayList() end
+                openFileBrowserManagerDialog()
+            elseif btn == "boren_fbtn_rescan" then
+                if fields.boren_input_fname and fields.boren_input_fname ~= "" then
+                    CFG.world_file_name = fields.boren_input_fname:gsub("^%s+", ""):gsub("%s+$", "")
+                end
+                if fields.boren_input_fdir and fields.boren_input_fdir ~= "" then
+                    CFG.world_custom_folder = fields.boren_input_fdir:gsub("^%s+", ""):gsub("%s+$", "")
+                end
+                persistConfig()
+                if updateFileInfoDisplayList then pcall(updateFileInfoDisplayList) end
+                openFileBrowserManagerDialog()
             end
             return true
         end
@@ -4542,6 +4834,21 @@ updateWorldDisplayList = function()
     pcall(editValue, "df_world_display_list", jsonEncode(buildWorldDisplayRows()))
 end
 
+updateFileInfoDisplayList = function()
+    if not editValue then return end
+    local fullPath, dir, fn = resolveWorldFilePath()
+    local okF, statusMsg = checkWorldFileStatus(fullPath)
+    local pInfo = getFolderPresetInfo(CFG.world_folder_mode)
+    local dirDisplay = (dir ~= "") and dir or "(Folder Game/Current)"
+    local rows = {
+        { "📁 Folder HP", string.format("%s [%s]", dirDisplay, pInfo.label) },
+        { "📄 File Aktif", fn },
+        { "🔍 Status File", okF and ("`2[ADA] `w" .. statusMsg) or ("`4[BELUM ADA] `oKlik Save untuk buat") },
+        { "Path Lengkap", fullPath }
+    }
+    pcall(editValue, "df_file_info_list", jsonEncode(rows))
+end
+
 updateTrashDisplayList = function()
     if not editValue then return end
     local tList = {}
@@ -4610,6 +4917,7 @@ end
 refreshNativeDisplayLists = function()
     updatePowerStatusList()
     updateWorldDisplayList()
+    updateFileInfoDisplayList()
     updateBagDisplayList()
     updateLogDisplayList()
 end
@@ -4723,9 +5031,13 @@ local function registerNativeBorenStoreUI()
     uiWorld:addButton("+ World Sekarang", "df_btn_add_cur_world")
     uiWorld:addButton("Kelola / Edit List World", "df_btn_view_worlds")
     uiWorld:addButton("Hapus Semua World", "df_btn_clear_worlds")
-    uiWorld:addInputString("File List World", CFG.world_file_name, "File", "boren_df_worlds.txt", "Save", "df_world_file")
-    uiWorld:addButton("Save List", "df_btn_save_worlds")
-    uiWorld:addButton("Load List", "df_btn_load_worlds")
+    uiWorld:addDivider()
+    uiWorld:addLabel("File & Folder Penyimpanan HP:")
+    uiWorld:addDisplayList("Lokasi File di HP", "Default", "df_file_info_list")
+    uiWorld:addButton("Pilih Folder / File (.txt)", "df_btn_browse_files")
+    uiWorld:addInputString("Nama File (.txt)", CFG.world_file_name, "File", "boren_df_worlds.txt", "Save", "df_world_file")
+    uiWorld:addButton("Save List World", "df_btn_save_worlds")
+    uiWorld:addButton("Load List World", "df_btn_load_worlds")
     uiWorld:addDisplayList("List World DF", "Default", "df_world_display_list")
     uiWorld:addDivider()
     uiWorld:addLabel("Random World:")
@@ -4962,16 +5274,34 @@ local function handleUIValue(vtype, name, value)
         end
     elseif name == "df_world_file" then
         local f = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
-        if f ~= "" then CFG.world_file_name = f end
+        if f ~= "" then
+            CFG.world_file_name = f
+            if updateFileInfoDisplayList then updateFileInfoDisplayList() end
+        end
+    elseif name == "df_btn_browse_files" then
+        ensureRuntimeHooks()
+        if updateFileInfoDisplayList then updateFileInfoDisplayList() end
+        local curW = getWorldNameSafe()
+        local opened = false
+        if curW ~= "" and curW ~= "EXIT" then
+            opened = openFileBrowserManagerDialog()
+        end
+        if not opened then
+            local fullP, dir, fn = resolveWorldFilePath()
+            local ok, statusMsg = checkWorldFileStatus(fullP)
+            if sendNotification then pcall(sendNotification, "Path File HP:\n" .. fullP .. "\n(" .. statusMsg .. ")") end
+        end
     elseif name == "df_btn_save_worlds" then
         local fIn = readGLString("df_world_file", "")
         if fIn ~= "" then CFG.world_file_name = fIn:gsub("^%s+", ""):gsub("%s+$", "") end
         saveWorldListToStorage(true)
+        if updateFileInfoDisplayList then updateFileInfoDisplayList() end
     elseif name == "df_btn_load_worlds" then
         local fIn = readGLString("df_world_file", "")
         if fIn ~= "" then CFG.world_file_name = fIn:gsub("^%s+", ""):gsub("%s+$", "") end
         loadWorldListFromStorage(true)
-        updateWorldDisplayList()
+        if updateWorldDisplayList then updateWorldDisplayList() end
+        if updateFileInfoDisplayList then updateFileInfoDisplayList() end
     elseif name == "df_world_random" then
         CFG.world_mode = toBoolVal(value) and "random" or "manual"
     elseif name == "df_random_target" then
@@ -5223,7 +5553,7 @@ local ALL_UI_ALIASES = {
     "df_run_power", "df_btn_stop_df", "df_pause_toggle",
     "df_manual_world_input", "df_manual_door_input",
     "df_btn_add_world", "df_btn_add_cur_world", "df_btn_clear_worlds", "df_btn_view_worlds",
-    "df_world_file", "df_btn_save_worlds", "df_btn_load_worlds",
+    "df_world_file", "df_btn_browse_files", "df_file_info_list", "df_btn_save_worlds", "df_btn_load_worlds",
     "df_world_random", "df_random_target", "df_random_len", "df_random_num",
     "df_use_wl", "df_wl_public",
     "df_use_sl", "df_sl_ignore", "df_sl_public",
