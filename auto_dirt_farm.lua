@@ -1161,7 +1161,7 @@ local function moveSafeTo(tx, ty)
     local pFn = FindPath or findPath
     if not pFn then return false end
 
-    local CHUNK_LIMIT = 10 -- Batas per 10 block hop agar hemat CPU dan anti-freeze
+    local CHUNK_LIMIT = 5 -- Hop pendek (5 block) agar gerakan natural & aman saat lag
 
     -- Waypoint wajib tile yang bisa diinjak; titik garis lurus sering jatuh di dirt/rock padat
     local function nearestFree(cx, cy)
@@ -1227,7 +1227,7 @@ local function moveSafeTo(tx, ty)
                     break
                 end
             end
-            safeSleep(35) -- Jeda ringan antar hop untuk melepas beban CPU & server
+            safeSleep(250) -- Jeda antar hop agar gerakan tidak terlalu cepat (anti-ban saat lag)
         end
     end
 
