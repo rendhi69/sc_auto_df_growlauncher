@@ -1203,6 +1203,9 @@ local function moveSafeTo(tx, ty)
             end
 
             local stepDist = math.max(math.abs(curX - stepX), math.abs(curY - stepY))
+            -- TELEPORT per hop dengan jeda SEBELUM teleport (jitter ±20% agar ritme tidak robotik)
+            safeSleep(math.floor(150 * (0.8 + math.random() * 0.4)))
+            if not STATE.running then break end
             pcall(pFn, stepX, stepY)
             -- Tunggu pergerakan segmen hop dengan polling ramah CPU
             local waited = 0
@@ -1217,17 +1220,19 @@ local function moveSafeTo(tx, ty)
             end
 
             local npx, npy = getPlayerTilePos()
-            if npx == tx and npy == ty then return true end
+            if npx == tx and npy == ty then safeSleep(150); return true end
             if npx == curX and npy == curY then
                 stuck = stuck + 1 -- tidak bergerak: coba langsung ke target, lalu menyerah
                 if direct and stuck >= 2 then break end
             else
                 stuck = 0
                 if direct and npx and npy and math.abs(npx - tx) <= 1 and math.abs(npy - ty) <= 1 then
+                    safeSleep(150)
                     break
                 end
             end
-            safeSleep(250) -- Jeda antar hop agar gerakan tidak terlalu cepat (anti-ban saat lag)
+            -- Jeda SETELAH tiap teleport (250ms, jitter ±20%) anti-ban saat lag
+            safeSleep(math.floor(250 * (0.8 + math.random() * 0.4)))
         end
     end
 
