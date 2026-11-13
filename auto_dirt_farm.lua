@@ -407,6 +407,9 @@ local updateWorldDisplayList    -- forward declaration
 local updateFileInfoDisplayList -- forward declaration
 local ensureOnlineInWorld       -- forward declaration
 local openFileBrowserManagerDialog -- forward declaration
+local openPasteWorldListDialog     -- forward declaration
+local openCopyAllWorldsDialog      -- forward declaration
+local parseAndValidateWorldBatch   -- forward declaration
 
 local function isErrorMessage(msg)
     local low = tostring(msg or ""):lower()
@@ -515,6 +518,139 @@ local function addManualWorldsFromString(rawWorldStr, defaultDoorStr, clearExist
     return addedCount
 end
 
+local function getWorldEntryStatusTag(entry)
+    if entry and entry.done then return "DONE" end
+    if STATE.running and entry and (STATE.active_world == entry.name or entry.status == "PROSES") then
+        return "PROSES"
+    end
+    return "ANTRI"
+end
+
+local function buildWorldDisplayRows()
+    local wList = {}
+    for i, entry in ipairs(CFG.world_list) do
+        local st = getWorldEntryStatusTag(entry)
+        local dInfo = (entry.door and entry.door ~= "") and ("Door: " .. entry.door) or "White Door"
+        table.insert(wList, { string.format("%d. %s [%s]", i, entry.name, st), dInfo })
+    end
+    if #wList == 0 then
+        table.insert(wList, { "List world masih kosong", "Ketik Nama World lalu klik + Tambah" })
+    end
+    return wList
+end
+
+updateWorldDisplayList = function()
+    if not editValue then return end
+    pcall(editValue, "df_world_display_list", jsonEncode(buildWorldDisplayRows()))
+end
+
+local function isWorldInQueue(worldName)
+    local wTarget = tostring(worldName or ""):upper():gsub("%s+", "")
+    if wTarget == "" or type(CFG.world_list) ~= "table" then return false end
+    for _, e in ipairs(CFG.world_list) do
+        if type(e) == "table" and tostring(e.name or ""):upper():gsub("%s+", "") == wTarget then
+            return true
+        end
+    end
+    return false
+end
+
+-- Parsing & validasi cerdas untuk Quick Paste & File Import
+-- Mampu menangani koma ngaco, spasi acak, tanda kutip, format WORLD:ID maupun WORLD|ID, dsb.
+parseAndValidateWorldBatch = function(rawText, replaceMode)
+    if type(rawText) ~= "string" or rawText == "" then
+        return 0, 0, 0, "Teks kosong! Silakan tempel daftar world terlebih dahulu."
+    end
+
+    -- 1. Bersihkan tanda kutip, kurung siku, dan tab yang sering ikut saat copas
+    local cleaned = rawText:gsub("[\"\'%[%]%(%)]", " "):gsub("\t", " ")
+
+    -- 2. Pecah string berdasarkan newline, koma, atau titik-koma (termasuk koma berturut-turut ,,)
+    local tokens = {}
+    for part in cleaned:gmatch("[^\r\n;,]+") do
+        local trimmed = part:gsub("^%s+", ""):gsub("%s+$", "")
+        if trimmed ~= "" then
+            table.insert(tokens, trimmed)
+        end
+    end
+
+    if #tokens == 0 then
+        return 0, 0, 0, "Tidak ada data world yang valid ditemukan."
+    end
+
+    local candidateList = {}
+    local seenInBatch = {}
+    local duplicateCount = 0
+    local ignoredCount = 0
+
+    for _, token in ipairs(tokens) do
+        -- Bersihkan spasi di sekitar delimiter : atau |
+        -- Contoh: "WORLD1  :  DOOR1" -> "WORLD1:DOOR1"
+        local normToken = token:gsub("%s*[:|]%s*", ":")
+
+        -- Parse menggunakan parseWorldEntryToken
+        local parsed = parseWorldEntryToken(normToken, "")
+        if parsed and parsed.name and parsed.name ~= "" then
+            local wName = parsed.name
+            -- Validasi karakter & panjang nama world Growtopia:
+            -- Hanya huruf A-Z, angka 0-9, atau underscore _; panjang 1-24 karakter
+            local validName = wName:match("^([%w_]+)$")
+            if validName and #validName >= 1 and #validName <= 24 then
+                parsed.name = validName:upper()
+                -- Validasi Door ID (jika ada, bersihkan karakter aneh)
+                if parsed.door and parsed.door ~= "" then
+                    parsed.door = parsed.door:match("([%w_]+)") or ""
+                end
+
+                if seenInBatch[parsed.name] then
+                    duplicateCount = duplicateCount + 1
+                else
+                    seenInBatch[parsed.name] = true
+                    table.insert(candidateList, parsed)
+                end
+            else
+                ignoredCount = ignoredCount + 1
+            end
+        else
+            ignoredCount = ignoredCount + 1
+        end
+    end
+
+    if #candidateList == 0 then
+        return 0, duplicateCount, ignoredCount, "Tidak ada world valid yang dapat ditambahkan."
+    end
+
+    local addedCount = 0
+    if replaceMode then
+        CFG.world_list = {}
+        for _, entry in ipairs(candidateList) do
+            table.insert(CFG.world_list, entry)
+            addedCount = addedCount + 1
+        end
+    else
+        for _, entry in ipairs(candidateList) do
+            if not isWorldInQueue(entry.name) then
+                table.insert(CFG.world_list, entry)
+                addedCount = addedCount + 1
+            else
+                duplicateCount = duplicateCount + 1
+            end
+        end
+    end
+
+    if addedCount > 0 then
+        CFG.world_mode = "manual"
+    end
+
+    persistConfig()
+    if updateWorldDisplayList then pcall(updateWorldDisplayList) end
+    if updateFileInfoDisplayList then pcall(updateFileInfoDisplayList) end
+
+    local summaryMsg = string.format("Berhasil input %d world! (Duplikat: %d | Dilewati: %d | Total Antrean: %d)",
+        addedCount, duplicateCount, ignoredCount, #CFG.world_list)
+    return addedCount, duplicateCount, ignoredCount, summaryMsg
+end
+
 local FOLDER_PRESET_DEFS = {
     { id = "download",   label = "Download",   desc = "Folder Download HP",       full = "/storage/emulated/0/Download/" },
     { id = "documents",  label = "Documents",  desc = "Folder Documents HP",      full = "/storage/emulated/0/Documents/" },
@@ -536,7 +672,7 @@ local function isSystemWindows()
     return (package.config and package.config:sub(1, 1) == "\\")
 end
 
--- Resolve path file .txt menjadi full absolute path di HP / PC
+-- Resolve path file .txt menjadi full absolute path di Folder Download HP / PC (Paten)
 local function resolveWorldFilePath(rawFileName, optFolderMode, optCustomDir)
     local fn = tostring(rawFileName or CFG.world_file_name or "boren_df_worlds.txt"):gsub("^%s+", ""):gsub("%s+$", "")
     if fn == "" then fn = "boren_df_worlds.txt" end
@@ -549,21 +685,32 @@ local function resolveWorldFilePath(rawFileName, optFolderMode, optCustomDir)
         return fn, dir, nameOnly
     end
 
-    local mode = optFolderMode or CFG.world_folder_mode or "download"
     local dir = ""
-
     if isSystemWindows() then
-        if mode == "custom" and (optCustomDir or CFG.world_custom_folder or "") ~= "" then
+        if (optFolderMode == "custom" or CFG.world_folder_mode == "custom") and (optCustomDir or CFG.world_custom_folder or "") ~= "" then
             dir = tostring(optCustomDir or CFG.world_custom_folder)
         else
-            dir = ""
+            local userProfile = os.getenv("USERPROFILE")
+            if userProfile and userProfile ~= "" then
+                local winDl = userProfile:gsub("\\", "/") .. "/Downloads/"
+                local okD, fhD = pcall(io.open, winDl .. "test_exist.tmp", "w")
+                if okD and fhD then
+                    fhD:close()
+                    pcall(os.remove, winDl .. "test_exist.tmp")
+                    dir = winDl
+                else
+                    dir = ""
+                end
+            else
+                dir = ""
+            end
         end
     else
-        local pInfo = getFolderPresetInfo(mode)
-        if mode == "custom" then
-            dir = tostring(optCustomDir or CFG.world_custom_folder or "")
+        if (optFolderMode == "custom" or CFG.world_folder_mode == "custom") and (optCustomDir or CFG.world_custom_folder or "") ~= "" then
+            dir = tostring(optCustomDir or CFG.world_custom_folder)
         else
-            dir = pInfo.full or "/storage/emulated/0/Download/"
+            -- Folder paten HP: Download
+            dir = "/storage/emulated/0/Download/"
         end
     end
 
@@ -592,6 +739,20 @@ local function checkWorldFileStatus(fullPath)
     end
     fh:close()
     return true, string.format("Ada (%d world)", worldCnt), worldCnt
+end
+
+updateFileInfoDisplayList = function()
+    if not editValue then return end
+    local fullPath, dir, fn = resolveWorldFilePath()
+    local okF, statusMsg = checkWorldFileStatus(fullPath)
+    local dirDisplay = (dir ~= "") and dir or "(Folder Download / Game)"
+    local rows = {
+        { "📁 Folder HP (Paten)", dirDisplay },
+        { "📄 File Backup", fn },
+        { "🔍 Status File", okF and ("`2[ADA] `w" .. statusMsg) or ("`4[BELUM DISIMPAN] `oKlik 'Simpan ke Download'") },
+        { "Path Lengkap", fullPath }
+    }
+    pcall(editValue, "df_file_info_list", jsonEncode(rows))
 end
 
 local function recordFileInHistory(fileName)
@@ -746,7 +907,7 @@ local function loadWorldListFromStorage(replaceExisting)
         return 0, emptyMsg
     end
 
-    local count = addManualWorldsFromString(rawData, "", replaceExisting ~= false, true)
+    local count, dups, ignored, summary = parseAndValidateWorldBatch(rawData, replaceExisting ~= false)
     local doneCnt, antriCnt = 0, 0
     for _, e in ipairs(CFG.world_list) do
         if e.done then doneCnt = doneCnt + 1 else antriCnt = antriCnt + 1 end
@@ -1560,8 +1721,6 @@ local function trashItem(itemID, count)
 end
 
 -- Forward declarations for World List editing helpers
-local refreshNativeDisplayLists
-local updateWorldDisplayList
 local updateTrashDisplayList
 local getConfiguredTrashItemList
 local setTrashListFromTable
@@ -1743,14 +1902,6 @@ openEditWorldEntryDialog = function(idx)
     pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
 end
 
-local function getWorldEntryStatusTag(entry)
-    if entry and entry.done then return "DONE" end
-    if STATE.running and entry and (STATE.active_world == entry.name or entry.status == "PROSES") then
-        return "PROSES"
-    end
-    return "ANTRI"
-end
-
 openWorldListManagerDialog = function()
     if not growtopia or not growtopia.sendDialog then return false end
     local dLines = {
@@ -1826,6 +1977,83 @@ openTrashListManagerDialog = function()
     table.insert(dLines, "end_dialog|boren_trash_mgr|Tutup||")
     pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
     return true
+end
+
+openPasteWorldListDialog = function()
+    local dLines = {
+        "set_default_color|`o",
+        "add_label_with_icon|big|`wInput Banyak World (Quick Paste)``|left|1240|",
+        "add_textbox|`oFormat: `2WORLD:ID `oatau `2WORLD|ID `oatau `2WORLD|left|",
+        "add_textbox|`9Contoh: `wDF1:DOOR1, DF2:DOOR2, DF3|left|",
+        "add_textbox|`7(Pemisah bisa koma `,`, titik koma `;`, spasi, atau ganti baris/enter)|left|",
+        "add_spacer|small|",
+        "add_text_input|boren_paste_raw|Tempel List World di sini:||9999|",
+        "add_spacer|small|",
+        "add_checkbox|boren_paste_replace|Ganti semua antrean yang ada saat ini (Replace)|0|",
+        "add_spacer|small|",
+        "add_button|boren_submit_paste|`2[+ Masukkan ke Antrean]|noflags|0|0|",
+        "add_button|boren_cancel_paste|`4[Batal]|noflags|0|0|",
+        "end_dialog|boren_paste_mgr|||",
+    }
+    local d = table.concat(dLines, "\n")
+    if sendVariant then
+        pcall(sendVariant, { v0 = "OnDialogRequest", v1 = d })
+        return true
+    elseif growtopia and growtopia.sendDialog then
+        pcall(growtopia.sendDialog, d)
+        return true
+    end
+    return false
+end
+
+openCopyAllWorldsDialog = function(fmt)
+    fmt = fmt or "colon"
+    local lines = {}
+    for _, entry in ipairs(CFG.world_list) do
+        if entry and entry.name and entry.name ~= "" then
+            local d = (entry.door and entry.door ~= "") and entry.door or ""
+            if fmt == "pipe" then
+                table.insert(lines, (d ~= "") and (entry.name .. "|" .. d) or entry.name)
+            elseif fmt == "name_only" then
+                table.insert(lines, entry.name)
+            else -- colon default
+                table.insert(lines, (d ~= "") and (entry.name .. ":" .. d) or entry.name)
+            end
+        end
+    end
+    local fullText = table.concat(lines, "\n")
+    local count = #CFG.world_list
+
+    -- Coba copy otomatis ke clipboard jika ImGui tersedia
+    if ImGui and ImGui.SetClipboardText and fullText ~= "" then
+        pcall(ImGui.SetClipboardText, fullText)
+    end
+
+    local dLines = {
+        "set_default_color|`o",
+        string.format("add_label_with_icon|big|`wDaftar Semua Farm World (%d World)``|left|1240|", count),
+        "add_textbox|`oDi bawah ini seluruh daftar world farm saat ini.|left|",
+        "add_textbox|`2Cara Salin di HP: `oTekan & tahan teks di kotak bawah -> `2Select All `o-> `2Copy|left|",
+        "add_spacer|small|",
+        string.format("add_text_input|boren_copy_field|Daftar World|%s|9999|", fullText),
+        "add_spacer|small|",
+        "add_textbox|`wGanti Format Tampilan / Salin:|left|",
+        "add_button|boren_btn_fmt_colon|`9[Format WORLD:DOOR]|noflags|0|0|",
+        "add_button|boren_btn_fmt_pipe|`9[Format WORLD|DOOR]|noflags|0|0|",
+        "add_button|boren_btn_fmt_name|`9[Hanya Nama World]|noflags|0|0|",
+        "add_spacer|small|",
+        "add_button|boren_btn_copy_close|`2[Selesai / Tutup]|noflags|0|0|",
+        "end_dialog|boren_copy_mgr|||",
+    }
+    local d = table.concat(dLines, "\n")
+    if sendVariant then
+        pcall(sendVariant, { v0 = "OnDialogRequest", v1 = d })
+        return true
+    elseif growtopia and growtopia.sendDialog then
+        pcall(growtopia.sendDialog, d)
+        return true
+    end
+    return false
 end
 
 openFileBrowserManagerDialog = function()
@@ -2081,6 +2309,41 @@ local function onSendPacketDialogHook(ptype, pkt)
                 STATE.error_logs = {}
                 STATE.error_count = 0
                 openMiniConsoleDialog(STATE.console_errors_only)
+            end
+            return true
+        end
+
+        if dName == "boren_paste_mgr" then
+            local btn = fields.buttonClicked or ""
+            if btn == "boren_submit_paste" then
+                local raw = pkt:match("boren_paste_raw|(.-)\nboren_paste_replace|")
+                    or pkt:match("boren_paste_raw|(.-)\nbuttonClicked|")
+                    or fields.boren_paste_raw
+                    or ""
+                local isReplace = (fields.boren_paste_replace == "1") or (pkt:find("boren_paste_replace|1", 1, true) ~= nil)
+                local added, dups, ignored, summary = parseAndValidateWorldBatch(raw, isReplace)
+                addLog("[Quick Paste] " .. summary)
+                if sendNotification then pcall(sendNotification, summary) end
+                if sendDialog then
+                    pcall(sendDialog, {
+                        title = "Hasil Input World (" .. tostring(added) .. " Ditambahkan)",
+                        alias = "boren_paste_result",
+                        message = summary,
+                        confirm = "OK"
+                    })
+                end
+            end
+            return true
+        end
+
+        if dName == "boren_copy_mgr" then
+            local btn = fields.buttonClicked or ""
+            if btn == "boren_btn_fmt_colon" then
+                openCopyAllWorldsDialog("colon")
+            elseif btn == "boren_btn_fmt_pipe" then
+                openCopyAllWorldsDialog("pipe")
+            elseif btn == "boren_btn_fmt_name" then
+                openCopyAllWorldsDialog("name_only")
             end
             return true
         end
@@ -4816,39 +5079,6 @@ end
 -- 11. NATIVE GROWLAUNCHER MENU ("Boren Store")
 -- ============================================================================
 
-local function buildWorldDisplayRows()
-    local wList = {}
-    for i, entry in ipairs(CFG.world_list) do
-        local st = getWorldEntryStatusTag(entry)
-        local dInfo = (entry.door and entry.door ~= "") and ("Door: " .. entry.door) or "White Door"
-        table.insert(wList, { string.format("%d. %s [%s]", i, entry.name, st), dInfo })
-    end
-    if #wList == 0 then
-        table.insert(wList, { "List world masih kosong", "Ketik Nama World lalu klik + Tambah" })
-    end
-    return wList
-end
-
-updateWorldDisplayList = function()
-    if not editValue then return end
-    pcall(editValue, "df_world_display_list", jsonEncode(buildWorldDisplayRows()))
-end
-
-updateFileInfoDisplayList = function()
-    if not editValue then return end
-    local fullPath, dir, fn = resolveWorldFilePath()
-    local okF, statusMsg = checkWorldFileStatus(fullPath)
-    local pInfo = getFolderPresetInfo(CFG.world_folder_mode)
-    local dirDisplay = (dir ~= "") and dir or "(Folder Game/Current)"
-    local rows = {
-        { "📁 Folder HP", string.format("%s [%s]", dirDisplay, pInfo.label) },
-        { "📄 File Aktif", fn },
-        { "🔍 Status File", okF and ("`2[ADA] `w" .. statusMsg) or ("`4[BELUM ADA] `oKlik Save untuk buat") },
-        { "Path Lengkap", fullPath }
-    }
-    pcall(editValue, "df_file_info_list", jsonEncode(rows))
-end
-
 updateTrashDisplayList = function()
     if not editValue then return end
     local tList = {}
@@ -5027,17 +5257,17 @@ local function registerNativeBorenStoreUI()
     uiWorld:addLabel("Daftar World:")
     uiWorld:addInputString("Nama World", CFG.manual_world_text, "World", "WORLD1", "Public", "df_manual_world_input")
     uiWorld:addInputString("Door ID (Opsional)", CFG.manual_door_text, "Door ID", "Kosong = White Door", "DoorFront", "df_manual_door_input")
-    uiWorld:addButton("+ Tambah World", "df_btn_add_world")
+    uiWorld:addButton("+ Tambah 1 World", "df_btn_add_world")
     uiWorld:addButton("+ World Sekarang", "df_btn_add_cur_world")
+    uiWorld:addButton("📋 Tempel Banyak World (Quick Paste)", "df_btn_paste_worlds")
+    uiWorld:addButton("📋 Lihat & Salin Semua World", "df_btn_copy_all_worlds")
     uiWorld:addButton("Kelola / Edit List World", "df_btn_view_worlds")
     uiWorld:addButton("Hapus Semua World", "df_btn_clear_worlds")
     uiWorld:addDivider()
-    uiWorld:addLabel("File & Folder Penyimpanan HP:")
-    uiWorld:addDisplayList("Lokasi File di HP", "Default", "df_file_info_list")
-    uiWorld:addButton("Pilih Folder / File (.txt)", "df_btn_browse_files")
-    uiWorld:addInputString("Nama File (.txt)", CFG.world_file_name, "File", "boren_df_worlds.txt", "Save", "df_world_file")
-    uiWorld:addButton("Save List World", "df_btn_save_worlds")
-    uiWorld:addButton("Load List World", "df_btn_load_worlds")
+    uiWorld:addLabel("File Cadangan (Folder Download HP):")
+    uiWorld:addDisplayList("Status File Download", "Default", "df_file_info_list")
+    uiWorld:addButton("📥 Simpan ke Folder Download", "df_btn_save_worlds")
+    uiWorld:addButton("📤 Muat dari Folder Download", "df_btn_load_worlds")
     uiWorld:addDisplayList("List World DF", "Default", "df_world_display_list")
     uiWorld:addDivider()
     uiWorld:addLabel("Random World:")
@@ -5271,6 +5501,28 @@ local function handleUIValue(vtype, name, value)
                 message = msg .. "\n\nTips: Klik tombol 'Lihat / Kelola List World' saat berada di dalam world untuk langsung Edit atau Hapus tiap world!",
                 confirm = "OK"
             })
+        end
+    elseif name == "df_btn_paste_worlds" then
+        ensureRuntimeHooks()
+        local curW = getWorldNameSafe()
+        local opened = false
+        if curW ~= "" and curW ~= "EXIT" then
+            opened = openPasteWorldListDialog()
+        end
+        if not opened then
+            if sendNotification then pcall(sendNotification, "Masuk ke world dulu untuk membuka dialog Tempel World!") end
+        end
+    elseif name == "df_btn_copy_all_worlds" then
+        ensureRuntimeHooks()
+        local curW = getWorldNameSafe()
+        local opened = false
+        if curW ~= "" and curW ~= "EXIT" then
+            opened = openCopyAllWorldsDialog("colon")
+        end
+        if not opened then
+            local txt = formatWorldListAsText(":")
+            if ImGui and ImGui.SetClipboardText and txt ~= "" then pcall(ImGui.SetClipboardText, txt) end
+            if sendNotification then pcall(sendNotification, "Daftar World:\n" .. (txt ~= "" and txt or "(kosong)")) end
         end
     elseif name == "df_world_file" then
         local f = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -5552,7 +5804,7 @@ updateTrashDisplayList()
 local ALL_UI_ALIASES = {
     "df_run_power", "df_btn_stop_df", "df_pause_toggle",
     "df_manual_world_input", "df_manual_door_input",
-    "df_btn_add_world", "df_btn_add_cur_world", "df_btn_clear_worlds", "df_btn_view_worlds",
+    "df_btn_add_world", "df_btn_add_cur_world", "df_btn_paste_worlds", "df_btn_copy_all_worlds", "df_btn_clear_worlds", "df_btn_view_worlds",
     "df_world_file", "df_btn_browse_files", "df_file_info_list", "df_btn_save_worlds", "df_btn_load_worlds",
     "df_world_random", "df_random_target", "df_random_len", "df_random_num",
     "df_use_wl", "df_wl_public",
