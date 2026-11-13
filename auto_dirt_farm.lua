@@ -1163,39 +1163,51 @@ local function moveSafeTo(tx, ty)
 
     local CHUNK_LIMIT = 10 -- Batas per 10 block hop agar hemat CPU dan anti-freeze
 
+    -- Waypoint wajib tile yang bisa diinjak; titik garis lurus sering jatuh di dirt/rock padat
+    local function nearestFree(cx, cy)
+        for r = 0, 3 do
+            for oy = -r, r do
+                for ox = -r, r do
+                    if math.max(math.abs(ox), math.abs(oy)) == r and isTileSafeToStand(cx + ox, cy + oy) then
+                        return cx + ox, cy + oy
+                    end
+                end
+            end
+        end
+        return nil, nil
+    end
+
+    local stuck = 0
     while STATE.running do
         local curX, curY = getPlayerTilePos()
-        if not curX or not curY then break end
-        if curX == tx and curY == ty then return true end
-
-        local dx = tx - curX
-        local dy = ty - curY
-        local dist = math.max(math.abs(dx), math.abs(dy))
-        if dist == 0 then return true end
-
-        local stepX, stepY
-        if dist <= CHUNK_LIMIT then
-            stepX, stepY = tx, ty
+        if not curX or not curY then
+            stuck = stuck + 1
+            if stuck >= 3 then break end
+            safeSleep(100)
         else
-            local ratio = CHUNK_LIMIT / dist
-            stepX = math.floor(curX + (dx * ratio) + 0.5)
-            stepY = math.floor(curY + (dy * ratio) + 0.5)
-            stepX = math.max(0, math.min(99, stepX))
-            stepY = math.max(0, math.min(53, stepY))
-        end
+            if curX == tx and curY == ty then return true end
 
-        local okChk, isBlocked = pcall(pFn, stepX, stepY, true)
-        if okChk and isBlocked == true and dist <= CHUNK_LIMIT then
-            return false
-        end
+            local dx = tx - curX
+            local dy = ty - curY
+            local dist = math.max(math.abs(dx), math.abs(dy))
+            if dist == 0 then return true end
 
-        local stepDist = math.max(math.abs(curX - stepX), math.abs(curY - stepY))
-        local ok = pcall(pFn, stepX, stepY)
-        if ok then
-            -- Tunggu pergerakan segmen hop per 10 block dengan polling ramah CPU
+            local stepX, stepY = tx, ty
+            local direct = (dist <= CHUNK_LIMIT) or stuck >= 1
+            if not direct then
+                local ratio = CHUNK_LIMIT / dist
+                local ix = math.max(0, math.min(99, math.floor(curX + (dx * ratio) + 0.5)))
+                local iy = math.max(0, math.min(53, math.floor(curY + (dy * ratio) + 0.5)))
+                stepX, stepY = nearestFree(ix, iy)
+                if not stepX then stepX, stepY, direct = tx, ty, true end
+            end
+
+            local stepDist = math.max(math.abs(curX - stepX), math.abs(curY - stepY))
+            pcall(pFn, stepX, stepY)
+            -- Tunggu pergerakan segmen hop dengan polling ramah CPU
             local waited = 0
-            local maxWait = math.max(80, math.min(500, stepDist * 45))
-            while waited < maxWait do
+            local maxWait = math.max(120, math.min(1500, stepDist * 60))
+            while waited < maxWait and STATE.running do
                 local nx, ny = getPlayerTilePos()
                 if nx and ny and math.abs(nx - stepX) <= 1 and math.abs(ny - stepY) <= 1 then
                     break
@@ -1205,17 +1217,17 @@ local function moveSafeTo(tx, ty)
             end
 
             local npx, npy = getPlayerTilePos()
-            if npx and npy and math.abs(npx - tx) <= 1 and math.abs(npy - ty) <= 1 then
-                return true
-            end
-
-            if dist > CHUNK_LIMIT then
-                safeSleep(35) -- Jeda ringan antar hop 10 block untuk melepas beban CPU & server
+            if npx == tx and npy == ty then return true end
+            if npx == curX and npy == curY then
+                stuck = stuck + 1 -- tidak bergerak: coba langsung ke target, lalu menyerah
+                if direct and stuck >= 2 then break end
             else
-                break
+                stuck = 0
+                if direct and npx and npy and math.abs(npx - tx) <= 1 and math.abs(npy - ty) <= 1 then
+                    break
+                end
             end
-        else
-            break
+            safeSleep(35) -- Jeda ringan antar hop untuk melepas beban CPU & server
         end
     end
 
