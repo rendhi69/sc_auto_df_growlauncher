@@ -1952,18 +1952,21 @@ end
 local function safeSendRawDialog(dText)
     if not dText or dText == "" then return false end
     if sendVariant then
-        local ok = pcall(sendVariant, { v0 = "OnDialogRequest", v1 = dText })
-        if ok then return true end
+        -- 1. Format resmi GrowLauncher (v1 = function name, v2 = dialog text)
+        pcall(sendVariant, { v1 = "OnDialogRequest", v2 = dText })
+        -- 2. Format alternatif 0-based
+        pcall(sendVariant, { v0 = "OnDialogRequest", v1 = dText })
+        -- 3. Format numeric array
+        pcall(sendVariant, { [1] = "OnDialogRequest", [2] = dText })
+        pcall(sendVariant, { [0] = "OnDialogRequest", [1] = dText })
     end
     if growtopia and growtopia.sendDialog then
-        local ok = pcall(growtopia.sendDialog, dText)
-        if ok then return true end
+        pcall(growtopia.sendDialog, dText)
     end
     if sendDialog then
-        local ok = pcall(sendDialog, dText)
-        if ok then return true end
+        pcall(sendDialog, dText)
     end
-    return false
+    return true
 end
 
 openEditWorldEntryDialog = function(idx)
@@ -1984,11 +1987,6 @@ openEditWorldEntryDialog = function(idx)
 end
 
 openWorldListManagerDialog = function(fmt)
-    local curW = getWorldNameSafe()
-    if curW == "" or curW == "EXIT" then
-        if sendNotification then pcall(sendNotification, "Silakan masuk ke dalam world terlebih dahulu untuk melihat/kelola list world!") end
-        return false
-    end
     fmt = fmt or "colon"
 
     local copyLines = {}
@@ -3812,6 +3810,29 @@ local function syncInputsFromGL()
     if rTgt and rTgt >= 1 then CFG.random_target_count = math.floor(rTgt) end
     local wFile = readGLString("df_world_file", "")
     if wFile ~= "" then CFG.world_file_name = wFile end
+
+    if getValue then
+        for _, vt in ipairs({ 2, 5, 1 }) do
+            local okB, blkVal = pcall(getValue, vt, "df_pick_blocker")
+            if okB and blkVal and blkVal ~= "" and blkVal ~= 0 then
+                local bNum = resolvePickedItemID(blkVal)
+                if bNum and bNum > 0 then
+                    CFG.blocker_door_itemid = bNum
+                    break
+                end
+            end
+        end
+        for _, vt in ipairs({ 2, 5, 1 }) do
+            local okD, dVal = pcall(getValue, vt, "df_pick_id_door")
+            if okD and dVal and dVal ~= "" and dVal ~= 0 then
+                local dNum = resolvePickedItemID(dVal)
+                if dNum and dNum > 0 then
+                    CFG.id_door_itemid = dNum
+                    break
+                end
+            end
+        end
+    end
 end
 
 local function acquireTargetWorld()
@@ -5647,7 +5668,28 @@ local function toBoolVal(v)
 end
 
 local function handleUIValue(vtype, name, value)
-    if type(name) ~= "string" then return end
+    -- Shift argumen jika GrowLauncher memanggil onValue(alias, value) atau alias ada di vtype
+    if type(vtype) == "string" and (name == nil or type(name) ~= "string" or (type(name) == "string" and vtype:sub(1, 3) == "df_")) then
+        value = name
+        name = vtype
+        vtype = 0
+    end
+    name = tostring(name or "")
+    if name == "" then return end
+
+    -- Fallback jika value picker kosong, baca langsung via getValue
+    if (value == nil or value == "" or value == 0) and getValue then
+        if name == "df_pick_blocker" or name == "df_pick_id_door" or name == "df_pick_save_item" or name == "df_pick_platform" or name == "df_pick_trash_item" then
+            for _, vt in ipairs({ 2, 5, 1 }) do
+                local okG, gv = pcall(getValue, vt, name)
+                if okG and gv and gv ~= "" and gv ~= 0 then
+                    value = gv
+                    break
+                end
+            end
+        end
+    end
+
     local now = os.clock()
     local isButton = (name:sub(1, 7) == "df_btn_")
     if isButton then
