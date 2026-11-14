@@ -1949,9 +1949,26 @@ local function parseDialogReturnFields(pkt)
     return fields
 end
 
+local function safeSendRawDialog(dText)
+    if not dText or dText == "" then return false end
+    if sendVariant then
+        local ok = pcall(sendVariant, { v0 = "OnDialogRequest", v1 = dText })
+        if ok then return true end
+    end
+    if growtopia and growtopia.sendDialog then
+        local ok = pcall(growtopia.sendDialog, dText)
+        if ok then return true end
+    end
+    if sendDialog then
+        local ok = pcall(sendDialog, dText)
+        if ok then return true end
+    end
+    return false
+end
+
 openEditWorldEntryDialog = function(idx)
     local entry = CFG.world_list[idx]
-    if not entry or not growtopia or not growtopia.sendDialog then return end
+    if not entry then return end
     local dLines = {
         "set_default_color|`o",
         string.format("add_label_with_icon|big|`wEdit World DF #%d``|left|2|", idx),
@@ -1963,11 +1980,15 @@ openEditWorldEntryDialog = function(idx)
         "add_button|del_w_edit|`4Hapus World Ini|noflags|0|0|",
         string.format("end_dialog|boren_world_edit_%d|Batal||", idx),
     }
-    pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
+    safeSendRawDialog(table.concat(dLines, "\n"))
 end
 
 openWorldListManagerDialog = function(fmt)
-    if not growtopia or not growtopia.sendDialog then return false end
+    local curW = getWorldNameSafe()
+    if curW == "" or curW == "EXIT" then
+        if sendNotification then pcall(sendNotification, "Silakan masuk ke dalam world terlebih dahulu untuk melihat/kelola list world!") end
+        return false
+    end
     fmt = fmt or "colon"
 
     local copyLines = {}
@@ -2027,14 +2048,13 @@ openWorldListManagerDialog = function(fmt)
     end
 
     table.insert(dLines, "end_dialog|boren_world_mgr|Tutup||")
-    pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
-    return true
+    return safeSendRawDialog(table.concat(dLines, "\n"))
 end
 
 openEditTrashEntryDialog = function(idx)
     local list = getConfiguredTrashItemList()
     local curId = list[idx]
-    if not curId or not growtopia or not growtopia.sendDialog then return end
+    if not curId then return end
     local dLines = {
         "set_default_color|`o",
         string.format("add_label_with_icon|big|`wEdit Item Trash #%d``|left|%d|", idx, curId),
@@ -2046,11 +2066,10 @@ openEditTrashEntryDialog = function(idx)
         "add_button|del_t_edit|`4Hapus Item Ini|noflags|0|0|",
         string.format("end_dialog|boren_trash_edit_%d|Batal||", idx),
     }
-    pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
+    safeSendRawDialog(table.concat(dLines, "\n"))
 end
 
 openTrashListManagerDialog = function()
-    if not growtopia or not growtopia.sendDialog then return false end
     local list = getConfiguredTrashItemList()
     local thresh = math.max(10, tonumber(CFG.trash_threshold) or 150)
     local dLines = {
@@ -2074,8 +2093,7 @@ openTrashListManagerDialog = function()
     table.insert(dLines, "add_button|boren_tadd|`2+ Tambah ke Trash|noflags|0|0|")
     table.insert(dLines, "add_button|boren_treset|`6Reset Default (Lava, Cave, Rock)|noflags|0|0|")
     table.insert(dLines, "end_dialog|boren_trash_mgr|Tutup||")
-    pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
-    return true
+    return safeSendRawDialog(table.concat(dLines, "\n"))
 end
 
 openPasteWorldListDialog = function()
@@ -2156,7 +2174,11 @@ openCopyAllWorldsDialog = function(fmt)
 end
 
 openFileBrowserManagerDialog = function()
-    if not growtopia or not growtopia.sendDialog then return false end
+    local curW = getWorldNameSafe()
+    if curW == "" or curW == "EXIT" then
+        if sendNotification then pcall(sendNotification, "Silakan masuk ke world mana saja terlebih dahulu untuk membuka File Manager!") end
+        return false
+    end
     local fullPath, dir, currentFn = resolveWorldFilePath()
     local files, targetDir = scanFolderTxtFiles(dir)
     local pInfo = getFolderPresetInfo(CFG.world_folder_mode)
@@ -2203,8 +2225,7 @@ openFileBrowserManagerDialog = function()
     table.insert(dLines, "add_button|boren_fbtn_rescan|`6Scan Ulang Folder|noflags|0|0|")
     table.insert(dLines, "end_dialog|boren_file_mgr|Tutup||")
 
-    pcall(growtopia.sendDialog, table.concat(dLines, "\n"))
-    return true
+    return safeSendRawDialog(table.concat(dLines, "\n"))
 end
 
 local function openMiniConsoleDialog(errorsOnly)
@@ -3672,7 +3693,77 @@ local function readGLBool(alias, fallback)
     return fallback
 end
 
+local function cleanItemName(name)
+    if type(name) ~= "string" then return "" end
+    -- Hapus kode warna Growtopia seperti `w, `o, `0-9, `b, `p, dsb.
+    return name:gsub("`.", ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function lookupItemIDByName(name)
+    local clean = cleanItemName(name)
+    if clean == "" then return nil end
+
+    -- 1. Ekstrak nomor langsung jika string mengandung format ID misal: "Air Vent (828)" atau "Door #12"
+    local embeddedId = clean:match("%((%d+)%)") or clean:match("#(%d+)")
+    if embeddedId and tonumber(embeddedId) and tonumber(embeddedId) > 0 then
+        return tonumber(embeddedId)
+    end
+
+    -- 2. Cek cache nama lokal & presets pintu DF
+    local cleanLow = clean:lower()
+    for id, n in pairs(ITEM_NAME_CACHE) do
+        if n and cleanItemName(n):lower() == cleanLow then
+            return id
+        end
+    end
+    for _, def in ipairs(BLOCKER_DOOR_PRESETS) do
+        if def.name and cleanItemName(def.name):lower():find(cleanLow, 1, true) then
+            return def.id
+        end
+    end
+    for _, def in ipairs(ID_DOOR_PRESETS) do
+        if def.name and cleanItemName(def.name):lower():find(cleanLow, 1, true) then
+            return def.id
+        end
+    end
+
+    -- 3. API C++ Resmi GrowLauncher: getItemInfoByName
+    if getItemInfoByName then
+        local ok, info = pcall(getItemInfoByName, clean)
+        if ok and info and tonumber(info.id) and tonumber(info.id) > 0 then
+            return tonumber(info.id)
+        end
+    end
+
+    -- 4. API C++ Resmi GrowLauncher: itemInfoManager.getItemInfoByName
+    if itemInfoManager and itemInfoManager.getItemInfoByName then
+        local ok, info = pcall(itemInfoManager.getItemInfoByName, clean)
+        if ok and info and tonumber(info.id) and tonumber(info.id) > 0 then
+            return tonumber(info.id)
+        end
+    end
+
+    -- 5. Fallback findItemID
+    if findItemID then
+        local ok, id = pcall(findItemID, clean)
+        if ok and tonumber(id) and tonumber(id) > 0 then
+            return tonumber(id)
+        end
+    end
+
+    -- 6. Fallback growtopia.getItemID
+    if growtopia and growtopia.getItemID then
+        local ok, id = pcall(growtopia.getItemID, clean)
+        if ok and tonumber(id) and tonumber(id) > 0 then
+            return tonumber(id)
+        end
+    end
+
+    return nil
+end
+
 local function resolvePickedItemID(value)
+    if not value or value == "" then return nil end
     if type(value) == "table" then
         value = value.id or value.itemID or value.itemid or value.value or value.name
     end
@@ -3681,13 +3772,13 @@ local function resolvePickedItemID(value)
         return math.floor(num)
     end
     if type(value) == "string" and value ~= "" then
-        if findItemID then
-            local ok, id = pcall(findItemID, value)
-            if ok and tonumber(id) and tonumber(id) > 0 then return tonumber(id) end
+        local sNum = tonumber(cleanItemName(value))
+        if sNum and sNum > 0 then
+            return math.floor(sNum)
         end
-        if growtopia and growtopia.getItemID then
-            local ok, id = pcall(growtopia.getItemID, value)
-            if ok and tonumber(id) and tonumber(id) > 0 then return tonumber(id) end
+        local lookedUp = lookupItemIDByName(value)
+        if lookedUp and lookedUp > 0 then
+            return lookedUp
         end
     end
     return nil
@@ -5613,7 +5704,10 @@ local function handleUIValue(vtype, name, value)
             STATE.buf_world_door = dIn
             CFG.manual_door_text = dIn
         end
-        local count = addManualWorldsFromString(STATE.buf_world_name, STATE.buf_world_door, false)
+        local targetW = (STATE.buf_world_name ~= "" and STATE.buf_world_name) or CFG.manual_world_text
+        local targetD = (STATE.buf_world_door ~= "" and STATE.buf_world_door) or CFG.manual_door_text
+        local count = addManualWorldsFromString(targetW, targetD, false)
+        persistConfig()
         updateWorldDisplayList()
         if count > 0 then
             if sendNotification then pcall(sendNotification, string.format("%d World ditambahkan! (Total: %d)", count, #CFG.world_list)) end
@@ -5626,6 +5720,7 @@ local function handleUIValue(vtype, name, value)
             STATE.buf_world_name = curW
             CFG.manual_world_text = curW
             addManualWorldsFromString(curW, STATE.buf_world_door, false)
+            persistConfig()
             updateWorldDisplayList()
             if sendNotification then pcall(sendNotification, string.format("World ditambahkan: %s (Total: %d)", curW, #CFG.world_list)) end
         else
@@ -5635,6 +5730,7 @@ local function handleUIValue(vtype, name, value)
         CFG.world_list = {}
         CFG.manual_world_text = ""
         STATE.buf_world_name = ""
+        persistConfig()
         updateWorldDisplayList()
         if sendNotification then pcall(sendNotification, "List world dikosongkan!") end
     elseif name == "df_btn_view_worlds" or name == "df_btn_paste_worlds" or name == "df_btn_copy_all_worlds" then
@@ -5694,53 +5790,102 @@ local function handleUIValue(vtype, name, value)
         CFG.use_jammer = toBoolVal(value)
     elseif name == "df_use_id_door" then
         CFG.use_id_door = toBoolVal(value)
+        persistConfig()
     elseif name == "df_pick_id_door" then
         local num = resolvePickedItemID(value)
+        if (not num or num <= 0) and getValue then
+            for _, vt in ipairs({ 2, 5, 1 }) do
+                local okG, gv = pcall(getValue, vt, name)
+                if okG and gv and gv ~= "" and gv ~= 0 then
+                    num = resolvePickedItemID(gv)
+                    if num and num > 0 then break end
+                end
+            end
+        end
         if num and num > 0 then
             CFG.id_door_itemid = num
-            if sendNotification then pcall(sendNotification, "Door ID: " .. resolveItemName(num)) end
+            persistConfig()
+            if editValue then pcall(editValue, "df_pick_id_door", tostring(num)) end
+            if sendNotification then pcall(sendNotification, "Door ID: " .. resolveItemName(num) .. " (ID: " .. num .. ")") end
         end
     elseif name == "df_door_id" then
         CFG.door_id = tostring(value or "DF123")
+        persistConfig()
     elseif name == "df_door_label" then
         CFG.door_label = tostring(value or "BOREN STORE")
+        persistConfig()
     elseif name == "df_use_blocker" then
         CFG.use_blocker_door = toBoolVal(value)
+        persistConfig()
     elseif name == "df_pick_blocker" then
         local num = resolvePickedItemID(value)
+        if (not num or num <= 0) and getValue then
+            for _, vt in ipairs({ 2, 5, 1 }) do
+                local okG, gv = pcall(getValue, vt, name)
+                if okG and gv and gv ~= "" and gv ~= 0 then
+                    num = resolvePickedItemID(gv)
+                    if num and num > 0 then break end
+                end
+            end
+        end
         if num and num > 0 then
             CFG.blocker_door_itemid = num
-            if sendNotification then pcall(sendNotification, "Penghalang Kiri: " .. resolveItemName(num)) end
+            persistConfig()
+            if editValue then pcall(editValue, "df_pick_blocker", tostring(num)) end
+            if sendNotification then pcall(sendNotification, "Penghalang Kiri: " .. resolveItemName(num) .. " (ID: " .. num .. ")") end
         end
     elseif name == "df_delay_tele_door" then
         CFG.delay_tele_door = math.max(300, tonumber(value) or 1500)
+        persistConfig()
     elseif name == "df_pack_w" then
         CFG.storage_pack_world = tostring(value or ""):upper()
+        persistConfig()
     elseif name == "df_pack_d" then
         CFG.storage_pack_door = tostring(value or "")
+        persistConfig()
     elseif name == "df_seed_w" then
         CFG.storage_seed_world = tostring(value or ""):upper()
+        persistConfig()
     elseif name == "df_seed_d" then
         CFG.storage_seed_door = tostring(value or "")
+        persistConfig()
     elseif name == "df_seed_thresh" then
         CFG.save_seed_threshold = tonumber(value) or 180
+        persistConfig()
     elseif name == "df_save_dirt" then
         CFG.save_dirt_seed = toBoolVal(value)
+        persistConfig()
     elseif name == "df_save_cave" then
         CFG.save_cave_seed = toBoolVal(value)
+        persistConfig()
     elseif name == "df_save_lava" then
         CFG.save_lava_seed = toBoolVal(value)
+        persistConfig()
     elseif name == "df_save_rock" then
         CFG.save_rock_seed = toBoolVal(value)
+        persistConfig()
     elseif name == "df_save_lava_block" then
         CFG.save_lava_block = toBoolVal(value)
+        persistConfig()
     elseif name == "df_use_custom_save" then
         CFG.use_custom_save = toBoolVal(value)
+        persistConfig()
     elseif name == "df_pick_save_item" then
         local num = resolvePickedItemID(value)
+        if (not num or num <= 0) and getValue then
+            for _, vt in ipairs({ 2, 5, 1 }) do
+                local okG, gv = pcall(getValue, vt, name)
+                if okG and gv and gv ~= "" and gv ~= 0 then
+                    num = resolvePickedItemID(gv)
+                    if num and num > 0 then break end
+                end
+            end
+        end
         if num and num > 0 then
             CFG.custom_save_itemid = num
             CFG.use_custom_save = true
+            persistConfig()
+            if editValue then pcall(editValue, "df_pick_save_item", tostring(num)) end
             if editToggle then pcall(editToggle, "df_use_custom_save", true) end
             if sendNotification then pcall(sendNotification, string.format("Item Save: %s (BP: %d)", resolveItemName(num), getInvCount(num))) end
         end
@@ -5776,24 +5921,51 @@ local function handleUIValue(vtype, name, value)
         CFG.max_plant_dirt = math.max(1, math.min(98, math.floor(tonumber(value) or 50)))
     elseif name == "df_use_platform" then
         CFG.use_platform = toBoolVal(value)
+        persistConfig()
     elseif name == "df_pick_platform" then
         local num = resolvePickedItemID(value)
+        if (not num or num <= 0) and getValue then
+            for _, vt in ipairs({ 2, 5, 1 }) do
+                local okG, gv = pcall(getValue, vt, name)
+                if okG and gv and gv ~= "" and gv ~= 0 then
+                    num = resolvePickedItemID(gv)
+                    if num and num > 0 then break end
+                end
+            end
+        end
         if num and num > 0 then
             CFG.platform_itemid = num
+            persistConfig()
+            if editValue then pcall(editValue, "df_pick_platform", tostring(num)) end
             if sendNotification then pcall(sendNotification, "Platform: " .. resolveItemName(num)) end
         end
     elseif name == "df_plat_left" then
         CFG.plat_left = toBoolVal(value)
+        persistConfig()
     elseif name == "df_plat_right" then
         CFG.plat_right = toBoolVal(value)
+        persistConfig()
     elseif name == "df_auto_trash" then
         CFG.auto_trash_junk = toBoolVal(value)
+        persistConfig()
     elseif name == "df_trash_thresh" then
         CFG.trash_threshold = math.max(10, math.min(200, math.floor(tonumber(value) or 150)))
+        persistConfig()
     elseif name == "df_pick_trash_item" then
         local num = resolvePickedItemID(value)
+        if (not num or num <= 0) and getValue then
+            for _, vt in ipairs({ 2, 5, 1 }) do
+                local okG, gv = pcall(getValue, vt, name)
+                if okG and gv and gv ~= "" and gv ~= 0 then
+                    num = resolvePickedItemID(gv)
+                    if num and num > 0 then break end
+                end
+            end
+        end
         if num and num > 0 then
             CFG.trash_picker_itemid = num
+            persistConfig()
+            if editValue then pcall(editValue, "df_pick_trash_item", tostring(num)) end
             if sendNotification then pcall(sendNotification, "Item Trash dipilih: " .. resolveItemName(num)) end
         end
     elseif name == "df_btn_add_trash" then
