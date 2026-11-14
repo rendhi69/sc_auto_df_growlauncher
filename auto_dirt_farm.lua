@@ -3811,29 +3811,6 @@ local function syncInputsFromGL()
     if rTgt and rTgt >= 1 then CFG.random_target_count = math.floor(rTgt) end
     local wFile = readGLString("df_world_file", "")
     if wFile ~= "" then CFG.world_file_name = wFile end
-
-    if getValue then
-        for _, vt in ipairs({ 2, 5, 1 }) do
-            local okB, blkVal = pcall(getValue, vt, "df_pick_blocker")
-            if okB and blkVal and blkVal ~= "" and blkVal ~= 0 then
-                local bNum = resolvePickedItemID(blkVal)
-                if bNum and bNum > 0 then
-                    CFG.blocker_door_itemid = bNum
-                    break
-                end
-            end
-        end
-        for _, vt in ipairs({ 2, 5, 1 }) do
-            local okD, dVal = pcall(getValue, vt, "df_pick_id_door")
-            if okD and dVal and dVal ~= "" and dVal ~= 0 then
-                local dNum = resolvePickedItemID(dVal)
-                if dNum and dNum > 0 then
-                    CFG.id_door_itemid = dNum
-                    break
-                end
-            end
-        end
-    end
 end
 
 local function acquireTargetWorld()
@@ -5569,12 +5546,14 @@ local function registerNativeBorenStoreUI()
     uiLock:addDivider()
     uiLock:addToggle("Door ID di (0,0)", CFG.use_id_door, "df_use_id_door", true)
     uiLock:addItemPicker("Item Door ID", idDoorName, tostring(CFG.id_door_itemid), "df_pick_id_door")
+    uiLock:addInputInt("ID Door (Manual)", tostring(CFG.id_door_itemid), "ID Item", "Contoh: 12 (Main Door) / 102 (Door)", "Tag", "df_input_id_door")
     uiLock:addInputString("ID Door", CFG.door_id, "ID Door", "DF123", "DoorFront", "df_door_id")
     uiLock:addInputString("Label Door", CFG.door_label, "Label", "BOREN STORE", "Label", "df_door_label")
     uiLock:addSlider("Jeda Tele (0,0) (ms)", 300, 4000, CFG.delay_tele_door, 100, false, "df_delay_tele_door")
     uiLock:addDivider()
     uiLock:addToggle("Penghalang Kiri", CFG.use_blocker_door, "df_use_blocker", true)
     uiLock:addItemPicker("Item Penghalang", blkDoorName, tostring(CFG.blocker_door_itemid), "df_pick_blocker")
+    uiLock:addInputInt("ID Penghalang (Manual)", tostring(CFG.blocker_door_itemid), "ID Item", "Contoh: 828 (Air Vent) / 102 (Door)", "Tag", "df_input_blocker")
 
     -- Sub-Menu 3: Storage
     local uiStorage = createNativeUI("3. Storage", "Inventory")
@@ -5827,7 +5806,15 @@ local function handleUIValue(vtype, name, value)
         if num and num > 0 and CFG.id_door_itemid ~= num then
             CFG.id_door_itemid = num
             persistConfig()
+            if editValue then pcall(editValue, "df_input_id_door", tostring(num)) end
             if sendNotification then pcall(sendNotification, "Door ID: " .. resolveItemName(num) .. " (ID: " .. num .. ")") end
+        end
+    elseif name == "df_input_id_door" then
+        local num = tonumber(value)
+        if num and num > 0 and CFG.id_door_itemid ~= math.floor(num) then
+            CFG.id_door_itemid = math.floor(num)
+            persistConfig()
+            if sendNotification then pcall(sendNotification, "Door ID (Manual): " .. resolveItemName(CFG.id_door_itemid) .. " (ID: " .. CFG.id_door_itemid .. ")") end
         end
     elseif name == "df_door_id" then
         CFG.door_id = tostring(value or "DF123")
@@ -5844,7 +5831,15 @@ local function handleUIValue(vtype, name, value)
         if num and num > 0 and CFG.blocker_door_itemid ~= num then
             CFG.blocker_door_itemid = num
             persistConfig()
+            if editValue then pcall(editValue, "df_input_blocker", tostring(num)) end
             if sendNotification then pcall(sendNotification, "Penghalang Kiri: " .. resolveItemName(num) .. " (ID: " .. num .. ")") end
+        end
+    elseif name == "df_input_blocker" then
+        local num = tonumber(value)
+        if num and num > 0 and CFG.blocker_door_itemid ~= math.floor(num) then
+            CFG.blocker_door_itemid = math.floor(num)
+            persistConfig()
+            if sendNotification then pcall(sendNotification, "Penghalang (Manual): " .. resolveItemName(CFG.blocker_door_itemid) .. " (ID: " .. CFG.blocker_door_itemid .. ")") end
         end
     elseif name == "df_delay_tele_door" then
         CFG.delay_tele_door = math.max(300, tonumber(value) or 1500)
@@ -6087,8 +6082,8 @@ local ALL_UI_ALIASES = {
     "df_world_random", "df_random_target", "df_random_len", "df_random_num",
     "df_use_wl", "df_wl_public",
     "df_use_sl", "df_sl_ignore", "df_sl_public",
-    "df_use_jammer", "df_use_id_door", "df_pick_id_door", "df_door_id", "df_door_label", "df_delay_tele_door",
-    "df_use_blocker", "df_pick_blocker",
+    "df_use_jammer", "df_use_id_door", "df_pick_id_door", "df_input_id_door", "df_door_id", "df_door_label", "df_delay_tele_door",
+    "df_use_blocker", "df_pick_blocker", "df_input_blocker",
     "df_pack_w", "df_pack_d", "df_seed_w", "df_seed_d", "df_seed_thresh",
     "df_save_dirt", "df_save_cave", "df_save_lava", "df_save_rock", "df_save_lava_block",
     "df_use_custom_save", "df_pick_save_item", "df_btn_test_drop",
