@@ -5,7 +5,7 @@
 -- Layout Gambar 1 & Pengaman Kunci Gambar 2, dengan auto-fetch & local fallback.
 -- ============================================================================
 
-local RAW_URL = "https://raw.githubusercontent.com/rendhi69/sc_auto_soil_growlauncher/main/auto_soil_builder.lua"
+local RAW_URL = "https://raw.githubusercontent.com/rendhi69/sc_build_soil_farm_growlauncher-/main/auto_soil_builder.lua"
 local fetchUrl = RAW_URL .. "?v=" .. tostring(os.time())
 
 local function notifyUser(msg)
