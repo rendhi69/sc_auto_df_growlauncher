@@ -1952,22 +1952,19 @@ end
 
 local function safeSendRawDialog(dText)
     if not dText or dText == "" then return false end
-    if sendVariant then
-        -- 1. Format resmi GrowLauncher (v1 = function name, v2 = dialog text)
-        pcall(sendVariant, { v1 = "OnDialogRequest", v2 = dText })
-        -- 2. Format alternatif 0-based
-        pcall(sendVariant, { v0 = "OnDialogRequest", v1 = dText })
-        -- 3. Format numeric array
-        pcall(sendVariant, { [1] = "OnDialogRequest", [2] = dText })
-        pcall(sendVariant, { [0] = "OnDialogRequest", [1] = dText })
+    if growtopia and type(growtopia.sendDialog) == "function" then
+        local ok = pcall(growtopia.sendDialog, dText)
+        if ok then return true end
     end
-    if growtopia and growtopia.sendDialog then
-        pcall(growtopia.sendDialog, dText)
+    if sendVariant then
+        local ok = pcall(sendVariant, { v1 = "OnDialogRequest", v2 = dText })
+        if ok then return true end
     end
     if sendDialog then
         pcall(sendDialog, dText)
+        return true
     end
-    return true
+    return false
 end
 
 openEditWorldEntryDialog = function(idx)
@@ -1975,6 +1972,7 @@ openEditWorldEntryDialog = function(idx)
     if not entry then return end
     local dLines = {
         "set_default_color|`o",
+        "add_quick_exit|",
         string.format("add_label_with_icon|big|`wEdit World DF #%d``|left|2|", idx),
         "add_spacer|small|",
         string.format("add_text_input|edit_w_name|Nama World|%s|24|", tostring(entry.name or "")),
@@ -2002,19 +2000,21 @@ openWorldListManagerDialog = function(fmt)
         end
     end
     local rawCopy = table.concat(copyLines, "\n")
+    local rawBoxText = table.concat(copyLines, ", ")
     if ImGui and ImGui.SetClipboardText and rawCopy ~= "" then
         pcall(ImGui.SetClipboardText, rawCopy)
     end
 
     local dLines = {
         "set_default_color|`o",
+        "add_quick_exit|",
         string.format("add_label_with_icon|big|`wKelola, Salin & Tempel World DF (%d)``|left|2|", #CFG.world_list),
         "add_textbox|`oDi sini Anda bisa salin antrean, tempel banyak world baru, dan edit/hapus world.|left|",
         "add_spacer|small|",
 
         -- Bagian 1: Salin Semua World
         "add_textbox|`2[1. Salin Semua World DF ke Clipboard]|left|",
-        string.format("add_text_input|boren_wcopy_box|Salin Antrean|%s|9999|", rawCopy),
+        string.format("add_text_input|boren_wcopy_box|Salin Antrean|%s|9999|", rawBoxText),
         "add_button|boren_btn_wfmt_colon|Format Titik Dua (:)|noflags|0|0|",
         "add_button|boren_btn_wfmt_pipe|Format Garis (|)|noflags|0|0|",
         "add_button|boren_btn_wfmt_name|Hanya Nama World|noflags|0|0|",
