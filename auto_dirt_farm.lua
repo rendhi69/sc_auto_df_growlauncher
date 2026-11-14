@@ -5678,19 +5678,6 @@ local function handleUIValue(vtype, name, value)
     name = tostring(name or "")
     if name == "" then return end
 
-    -- Fallback jika value picker kosong, baca langsung via getValue
-    if (value == nil or value == "" or value == 0) and getValue then
-        if name == "df_pick_blocker" or name == "df_pick_id_door" or name == "df_pick_save_item" or name == "df_pick_platform" or name == "df_pick_trash_item" then
-            for _, vt in ipairs({ 2, 5, 1 }) do
-                local okG, gv = pcall(getValue, vt, name)
-                if okG and gv and gv ~= "" and gv ~= 0 then
-                    value = gv
-                    break
-                end
-            end
-        end
-    end
-
     local now = os.clock()
     local isButton = (name:sub(1, 7) == "df_btn_")
     if isButton then
@@ -5835,20 +5822,11 @@ local function handleUIValue(vtype, name, value)
         CFG.use_id_door = toBoolVal(value)
         persistConfig()
     elseif name == "df_pick_id_door" then
+        if not value or value == "" or value == 0 or value == "0" then return end
         local num = resolvePickedItemID(value)
-        if (not num or num <= 0) and getValue then
-            for _, vt in ipairs({ 2, 5, 1 }) do
-                local okG, gv = pcall(getValue, vt, name)
-                if okG and gv and gv ~= "" and gv ~= 0 then
-                    num = resolvePickedItemID(gv)
-                    if num and num > 0 then break end
-                end
-            end
-        end
-        if num and num > 0 then
+        if num and num > 0 and CFG.id_door_itemid ~= num then
             CFG.id_door_itemid = num
             persistConfig()
-            if editValue then pcall(editValue, "df_pick_id_door", tostring(num)) end
             if sendNotification then pcall(sendNotification, "Door ID: " .. resolveItemName(num) .. " (ID: " .. num .. ")") end
         end
     elseif name == "df_door_id" then
@@ -5861,20 +5839,11 @@ local function handleUIValue(vtype, name, value)
         CFG.use_blocker_door = toBoolVal(value)
         persistConfig()
     elseif name == "df_pick_blocker" then
+        if not value or value == "" or value == 0 or value == "0" then return end
         local num = resolvePickedItemID(value)
-        if (not num or num <= 0) and getValue then
-            for _, vt in ipairs({ 2, 5, 1 }) do
-                local okG, gv = pcall(getValue, vt, name)
-                if okG and gv and gv ~= "" and gv ~= 0 then
-                    num = resolvePickedItemID(gv)
-                    if num and num > 0 then break end
-                end
-            end
-        end
-        if num and num > 0 then
+        if num and num > 0 and CFG.blocker_door_itemid ~= num then
             CFG.blocker_door_itemid = num
             persistConfig()
-            if editValue then pcall(editValue, "df_pick_blocker", tostring(num)) end
             if sendNotification then pcall(sendNotification, "Penghalang Kiri: " .. resolveItemName(num) .. " (ID: " .. num .. ")") end
         end
     elseif name == "df_delay_tele_door" then
@@ -5914,21 +5883,12 @@ local function handleUIValue(vtype, name, value)
         CFG.use_custom_save = toBoolVal(value)
         persistConfig()
     elseif name == "df_pick_save_item" then
+        if not value or value == "" or value == 0 or value == "0" then return end
         local num = resolvePickedItemID(value)
-        if (not num or num <= 0) and getValue then
-            for _, vt in ipairs({ 2, 5, 1 }) do
-                local okG, gv = pcall(getValue, vt, name)
-                if okG and gv and gv ~= "" and gv ~= 0 then
-                    num = resolvePickedItemID(gv)
-                    if num and num > 0 then break end
-                end
-            end
-        end
-        if num and num > 0 then
+        if num and num > 0 and CFG.custom_save_itemid ~= num then
             CFG.custom_save_itemid = num
             CFG.use_custom_save = true
             persistConfig()
-            if editValue then pcall(editValue, "df_pick_save_item", tostring(num)) end
             if editToggle then pcall(editToggle, "df_use_custom_save", true) end
             if sendNotification then pcall(sendNotification, string.format("Item Save: %s (BP: %d)", resolveItemName(num), getInvCount(num))) end
         end
@@ -5966,20 +5926,11 @@ local function handleUIValue(vtype, name, value)
         CFG.use_platform = toBoolVal(value)
         persistConfig()
     elseif name == "df_pick_platform" then
+        if not value or value == "" or value == 0 or value == "0" then return end
         local num = resolvePickedItemID(value)
-        if (not num or num <= 0) and getValue then
-            for _, vt in ipairs({ 2, 5, 1 }) do
-                local okG, gv = pcall(getValue, vt, name)
-                if okG and gv and gv ~= "" and gv ~= 0 then
-                    num = resolvePickedItemID(gv)
-                    if num and num > 0 then break end
-                end
-            end
-        end
-        if num and num > 0 then
+        if num and num > 0 and CFG.platform_itemid ~= num then
             CFG.platform_itemid = num
             persistConfig()
-            if editValue then pcall(editValue, "df_pick_platform", tostring(num)) end
             if sendNotification then pcall(sendNotification, "Platform: " .. resolveItemName(num)) end
         end
     elseif name == "df_plat_left" then
@@ -5995,20 +5946,11 @@ local function handleUIValue(vtype, name, value)
         CFG.trash_threshold = math.max(10, math.min(200, math.floor(tonumber(value) or 150)))
         persistConfig()
     elseif name == "df_pick_trash_item" then
+        if not value or value == "" or value == 0 or value == "0" then return end
         local num = resolvePickedItemID(value)
-        if (not num or num <= 0) and getValue then
-            for _, vt in ipairs({ 2, 5, 1 }) do
-                local okG, gv = pcall(getValue, vt, name)
-                if okG and gv and gv ~= "" and gv ~= 0 then
-                    num = resolvePickedItemID(gv)
-                    if num and num > 0 then break end
-                end
-            end
-        end
-        if num and num > 0 then
+        if num and num > 0 and CFG.trash_picker_itemid ~= num then
             CFG.trash_picker_itemid = num
             persistConfig()
-            if editValue then pcall(editValue, "df_pick_trash_item", tostring(num)) end
             if sendNotification then pcall(sendNotification, "Item Trash dipilih: " .. resolveItemName(num)) end
         end
     elseif name == "df_btn_add_trash" then
