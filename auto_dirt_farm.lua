@@ -1203,8 +1203,9 @@ local function moveSafeTo(tx, ty)
             end
 
             local stepDist = math.max(math.abs(curX - stepX), math.abs(curY - stepY))
-            -- TELEPORT per hop dengan jeda SEBELUM teleport (jitter ±20% agar ritme tidak robotik)
-            safeSleep(math.floor(150 * (0.8 + math.random() * 0.4)))
+            local walkDelay = math.max(50, tonumber(CFG.delay_walk) or 160)
+            -- TELEPORT per hop dengan jeda SEBELUM teleport mengikuti slider "Delay Jalan" (jitter ±20%)
+            safeSleep(math.floor(walkDelay * (0.8 + math.random() * 0.4)))
             if not STATE.running then break end
             pcall(pFn, stepX, stepY)
             -- Tunggu pergerakan segmen hop dengan polling ramah CPU
@@ -1220,19 +1221,19 @@ local function moveSafeTo(tx, ty)
             end
 
             local npx, npy = getPlayerTilePos()
-            if npx == tx and npy == ty then safeSleep(150); return true end
+            if npx == tx and npy == ty then safeSleep(math.floor(walkDelay * 0.8)); return true end
             if npx == curX and npy == curY then
                 stuck = stuck + 1 -- tidak bergerak: coba langsung ke target, lalu menyerah
                 if direct and stuck >= 2 then break end
             else
                 stuck = 0
                 if direct and npx and npy and math.abs(npx - tx) <= 1 and math.abs(npy - ty) <= 1 then
-                    safeSleep(150)
+                    safeSleep(math.floor(walkDelay * 0.8))
                     break
                 end
             end
-            -- Jeda SETELAH tiap teleport (250ms, jitter ±20%) anti-ban saat lag
-            safeSleep(math.floor(250 * (0.8 + math.random() * 0.4)))
+            -- Jeda SETELAH tiap teleport mengikuti slider "Delay Jalan" (walkDelay * 1.5, jitter ±20%)
+            safeSleep(math.floor(walkDelay * 1.5 * (0.8 + math.random() * 0.4)))
         end
     end
 
@@ -6040,12 +6041,16 @@ local function handleUIValue(vtype, name, value)
         end
     elseif name == "df_delay_break" then
         CFG.delay_break = tonumber(value) or 180
+        persistConfig()
     elseif name == "df_delay_place" then
         CFG.delay_place = tonumber(value) or 160
+        persistConfig()
     elseif name == "df_delay_walk" then
         CFG.delay_walk = tonumber(value) or 250
+        persistConfig()
     elseif name == "df_delay_warp" then
         CFG.delay_warp = tonumber(value) or 4500
+        persistConfig()
     elseif name == "df_mini_console" then
         STATE.show_mini_console = toBoolVal(value)
     elseif name == "df_console_err_only" then
