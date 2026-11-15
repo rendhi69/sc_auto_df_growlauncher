@@ -110,34 +110,41 @@ local function jsonEncode(val)
 end
 
 -- 2. PURE LUA ITEM ID CONSTANTS & DOOR CATEGORIES
+-- STANDAR DATABASE RESMI GROWTOPIA / LUCIFER (100% PERSIS items.dat)
 local ITEM = {
     BLANK          = 0,
     DIRT           = 2,
     DIRT_SEED      = 3,
+    CAVE_DIRT      = 14,
+    CAVE_SEED      = 15,
     LAVA           = 4,
     LAVA_SEED      = 5,
     MAIN_DOOR      = 6,
+    WHITE_DOOR     = 6,
     BEDROCK        = 8,
     ROCK           = 10,
     ROCK_SEED      = 11,
     DOOR           = 12,
+    WOODEN_DOOR    = 12,
     CAVE_BG        = 14,
-    CAVE_SEED      = 15,
-    PORTCULLIS     = 16,
     PUNCH          = 18,
+    DUNGEON_DOOR   = 30,   -- Standar Lucifer: ID 30 (Dungeon Door)
     WRENCH         = 32,
-    WOOD_PLATFORM  = 102,
+    PORTCULLIS     = 60,   -- Standar Lucifer: ID 60 (Portcullis)
+    WOOD_PLATFORM  = 102,  -- Standar Lucifer: ID 102 (Wooden Platform)
     SMALL_LOCK     = 202,
     BIG_LOCK       = 204,
     HUGE_LOCK      = 206,
+    HOUSE_ENTRANCE = 224,  -- Standar Lucifer: ID 224 (House Entrance)
     JAMMER         = 226,
     WORLD_LOCK     = 242,
-    DUNGEON_DOOR   = 540,
-    SCREEN_DOOR    = 558,
-    PORTAL         = 766,
-    AIR_VENT       = 828,
-    HOUSE_ENTRANCE = 1240,
+    PORTAL         = 544,  -- Standar Lucifer: ID 544 (Orange Portal)
+    PORTAL_BLUE    = 546,  -- Standar Lucifer: ID 546 (Blue Portal)
+    WATER          = 822,  -- Standar Lucifer: ID 822 (Water Bucket)
+    SCREEN_DOOR    = 858,  -- Standar Lucifer: ID 858 (Screen Door)
     DIAMOND_LOCK   = 1796,
+    AIR_VENT       = 2810, -- Standar Lucifer: ID 2810 (Air Vent)
+    CAVE_BLAST     = 3562, -- Standar Lucifer: ID 3562 (Cave Blast)
 }
 
 local ITEM_NAME_CACHE = {
@@ -151,46 +158,59 @@ local ITEM_NAME_CACHE = {
     [10]   = "Rock",
     [11]   = "Rock Seed",
     [12]   = "Door",
+    [13]   = "Door Seed",
     [14]   = "Cave Background",
     [15]   = "Cave Background Seed",
-    [16]   = "Portcullis",
     [18]   = "Fist",
+    [30]   = "Dungeon Door",
+    [31]   = "Dungeon Door Seed",
     [32]   = "Wrench",
+    [60]   = "Portcullis",
+    [61]   = "Portcullis Seed",
     [102]  = "Wooden Platform",
+    [103]  = "Wooden Platform Seed",
     [202]  = "Small Lock",
     [204]  = "Big Lock",
     [206]  = "Huge Lock",
+    [224]  = "House Entrance",
+    [225]  = "House Entrance Seed",
     [226]  = "Signal Jammer",
     [242]  = "World Lock",
-    [540]  = "Dungeon Door",
-    [558]  = "Screen Door",
-    [766]  = "Portal",
-    [828]  = "Air Vent",
-    [1240] = "House Entrance",
+    [544]  = "Orange Portal",
+    [546]  = "Blue Portal",
+    [822]  = "Water Bucket",
+    [858]  = "Screen Door",
+    [859]  = "Screen Door Seed",
     [1796] = "Diamond Lock",
+    [2810] = "Air Vent",
+    [2811] = "Air Vent Seed",
+    [3562] = "Cave Blast",
 }
 
 local DOOR_ID_PRESETS = {
-    { id = 12,  name = "Door (12)" },
-    { id = 540, name = "Dungeon Door (540)" },
-    { id = 766, name = "Portal (766)" },
+    { id = 12,   name = "Door (12)" },
+    { id = 30,   name = "Dungeon Door (30)" },
+    { id = 544,  name = "Orange Portal (544)" },
+    { id = 224,  name = "House Entrance (224)" },
+    { id = 2810, name = "Air Vent (2810)" },
 }
 
 local BLOCKER_DOOR_PRESETS = {
-    { id = 828,  name = "Air Vent (828)" },
-    { id = 1240, name = "House Entrance (1240)" },
-    { id = 558,  name = "Screen Door (558)" },
-    { id = 16,   name = "Portcullis (16)" },
-    { id = 540,  name = "Dungeon Door (540)" },
+    { id = 2810, name = "Air Vent (2810)" },
     { id = 12,   name = "Door (12)" },
+    { id = 30,   name = "Dungeon Door (30)" },
+    { id = 60,   name = "Portcullis (60)" },
+    { id = 224,  name = "House Entrance (224)" },
+    { id = 858,  name = "Screen Door (858)" },
+    { id = 544,  name = "Orange Portal (544)" },
 }
 
 local KNOWN_ID_DOOR_IDS = {
-    [12] = true, [540] = true, [766] = true,
+    [12] = true, [30] = true, [544] = true, [546] = true, [224] = true, [2810] = true,
 }
 
 local KNOWN_BLOCKER_IDS = {
-    [828] = true, [1240] = true, [558] = true, [16] = true, [540] = true, [12] = true,
+    [2810] = true, [12] = true, [30] = true, [60] = true, [224] = true, [858] = true, [544] = true, [546] = true,
 }
 
 local OTHER_LOCKS = {
@@ -202,22 +222,28 @@ local OTHER_LOCKS = {
 local function resolveItemName(id)
     id = tonumber(id) or 0
     if id <= 0 then return "None" end
-    if ITEM_NAME_CACHE[id] then
-        return ITEM_NAME_CACHE[id]
-    end
+    -- 1. Cek native GrowLauncher engine (langsung baca items.dat aktif persis Lucifer)
     if getItemInfoByID then
         local ok, info = pcall(getItemInfoByID, id)
-        if ok and info and type(info.name) == "string" and info.name ~= "" then
-            ITEM_NAME_CACHE[id] = info.name
+        if ok and info and type(info.name) == "string" and info.name ~= "" and not info.name:find("Unknown") then
             return info.name
         end
     end
     if growtopia and growtopia.getItemName then
-        local ok, name = pcall(growtopia.getItemName, id)
-        if ok and type(name) == "string" and name ~= "" then
-            ITEM_NAME_CACHE[id] = name
-            return name
+        local ok, n = pcall(growtopia.getItemName, id)
+        if ok and n and n ~= "" and not tostring(n):find("Unknown") then
+            return tostring(n)
         end
+    end
+    if getItemName then
+        local ok, n = pcall(getItemName, id)
+        if ok and n and n ~= "" and not n:find("Unknown") then
+            return n
+        end
+    end
+    -- 2. Fallback: Standar Cache Lucifer
+    if ITEM_NAME_CACHE[id] then
+        return ITEM_NAME_CACHE[id]
     end
     return "Item #" .. tostring(id)
 end
@@ -320,7 +346,7 @@ local CFG = {
     door_label          = tostring(loadPref("door_label", "BOREN STORE") or "BOREN STORE"),
 
     use_blocker_door    = loadPref("use_blocker_door", true),
-    blocker_door_itemid = tonumber(loadPref("blocker_door_itemid", 828)) or 828,
+    blocker_door_itemid = tonumber(loadPref("blocker_door_itemid", 2810)) or 2810,
     delay_tele_door     = tonumber(loadPref("delay_tele_door", 1500)) or 1500,
 
     -- Seed Saving Options
@@ -3586,7 +3612,7 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
     if CFG.use_id_door and not (existingSec and existingSec.has_id_door) then
         local did = tonumber(CFG.id_door_itemid) or 0
         if did <= 0 or getInvCount(did) <= 0 then
-            for _, altID in ipairs({ ITEM.WOODEN_DOOR, 102, 540, 766, 1240 }) do
+            for _, altID in ipairs({ ITEM.DOOR, 30, 544, 224, 2810 }) do
                 if altID ~= did and getInvCount(altID) > 0 then
                     addLog(string.format("`2[Auto-Pilih Door ID] `wMenemukan %s (#%d) di tas, dijadikan Door ID!", resolveItemName(altID), altID))
                     CFG.id_door_itemid = altID
@@ -3605,7 +3631,7 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
     if CFG.use_blocker_door and not (existingSec and existingSec.has_left_blocker) then
         local bid = tonumber(CFG.blocker_door_itemid) or 0
         if bid <= 0 or getInvCount(bid) <= 0 then
-            for _, altID in ipairs({ ITEM.WOODEN_DOOR, 828, 1240, 558, 16, 540, 102 }) do
+            for _, altID in ipairs({ ITEM.AIR_VENT, ITEM.DOOR, 30, 60, 224, 858, 544 }) do
                 if altID ~= bid and getInvCount(altID) > 0 then
                     addLog(string.format("`2[Auto-Pilih Blocker] `wMenemukan %s (#%d) di tas, dijadikan Penghalang!", resolveItemName(altID), altID))
                     CFG.blocker_door_itemid = altID
@@ -3715,7 +3741,7 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
             local foundObjs = findWorldObjectsByItemID(needID)
             -- Jika Door/Blocker spesifik tidak ada di lantai storage, cari pintu alternatif di lantai storage!
             if #foundObjs == 0 and (needID == CFG.blocker_door_itemid or needID == CFG.id_door_itemid) then
-                for _, altID in ipairs({ ITEM.WOODEN_DOOR, 102, 828, 558, 16, 540, 1240 }) do
+                for _, altID in ipairs({ ITEM.AIR_VENT, ITEM.DOOR, 30, 60, 224, 858, 544 }) do
                     local altObjs = findWorldObjectsByItemID(altID)
                     if #altObjs > 0 then
                         foundObjs = altObjs
@@ -3937,7 +3963,7 @@ local function lookupItemIDByName(name)
     local clean = cleanItemName(name)
     if clean == "" then return nil end
 
-    -- 1. Ekstrak nomor langsung jika string mengandung format ID misal: "Air Vent (828)" atau "Door #12"
+    -- 1. Ekstrak nomor langsung jika string mengandung format ID misal: "Air Vent (2810)" atau "Door #12"
     local embeddedId = clean:match("%((%d+)%)") or clean:match("#(%d+)")
     if embeddedId and tonumber(embeddedId) and tonumber(embeddedId) > 0 then
         return tonumber(embeddedId)
@@ -5827,7 +5853,7 @@ local function registerNativeBorenStoreUI()
     uiLock:addDivider()
     uiLock:addToggle("Penghalang Kiri", CFG.use_blocker_door, "df_use_blocker", true)
     uiLock:addItemPicker("Item Penghalang", blkDoorName, tostring(CFG.blocker_door_itemid), "df_pick_blocker")
-    uiLock:addInputInt("ID Penghalang (Manual)", tostring(CFG.blocker_door_itemid), "ID Item", "Contoh: 828 (Air Vent) / 102 (Door)", "Tag", "df_input_blocker")
+    uiLock:addInputInt("ID Penghalang (Manual)", tostring(CFG.blocker_door_itemid), "ID Item", "Contoh: 2810 (Air Vent) / 12 (Door)", "Tag", "df_input_blocker")
 
     -- Sub-Menu 3: Storage
     local uiStorage = createNativeUI("3. Storage", "Inventory")
@@ -6399,5 +6425,8 @@ end
 
 _G.findWorldObjectsByItemID = findWorldObjectsByItemID
 _G.getInvCount = getInvCount
+_G.ITEM = ITEM
+_G.resolveItemName = resolveItemName
+_G.lookupItemIDByName = lookupItemIDByName
 
 _G.CFG = CFG
