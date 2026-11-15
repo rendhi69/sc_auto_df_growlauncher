@@ -961,34 +961,229 @@ local function getPlayerTilePos()
     return math.floor((px + 10) / 32), math.floor((py + 15) / 32)
 end
 
-local function getInvCount(itemID)
-    if not itemID or itemID <= 0 then return 0 end
-    if growtopia and growtopia.checkInventoryCount then
-        local ok, cnt = pcall(growtopia.checkInventoryCount, itemID)
-        if ok and type(cnt) == "number" then
-            return cnt
+-- ===================== ROBUST INVENTORY & WORLD OBJECT ENGINE =====================
+-- Sesuai dokumentasi resmi GrowLauncher (docs/namespaces/growtopia.md, docs/structs/game-objects.md):
+-- 1. InventoryItem memiliki { id, amount }
+-- 2. getInventory() mengembalikan InventoryItem[] (dapat berupa table maupun Sol2 userdata container)
+-- 3. growtopia.checkInventory(itemid) -> boolean (Cek native C++ apakah player memiliki item)
+-- 4. growtopia.checkInventoryCount(itemid) -> number (Hitung total item via C++ memory)
+-- 5. getObjectList() / getObjects() -> WorldObject[] ({ id, itemid, amount, pos={x, y} })
+
+local function readInvItemFields(it)
+    local t = type(it)
+    if t ~= "table" and t ~= "userdata" then return nil, nil end
+    local id, amt = nil, nil
+    pcall(function() id = tonumber(it.id or it.itemid or it.itemID or it.item_id) end)
+    pcall(function() amt = tonumber(it.amount or it.count or it.cnt) end)
+    return id, amt
+end
+
+local function getRawInventory()
+    if not getInventory then return nil end
+    local ok, inv = pcall(getInventory)
+    if not ok or inv == nil then return nil end
+    local t = type(inv)
+    if t ~= "table" and t ~= "userdata" then return nil end
+    local items = nil
+    pcall(function() items = inv.items end)
+    if items ~= nil and (type(items) == "table" or type(items) == "userdata") then return items end
+    return inv
+end
+
+local function forEachInvItem(fn)
+    local inv = getRawInventory()
+    if not inv then return 0 end
+    local seen = 0
+    pcall(function()
+        for _, it in pairs(inv) do
+            local id, amt = readInvItemFields(it)
+            if id and id > 0 then
+                seen = seen + 1
+                fn(id, amt or 0)
+            end
         end
-    end
-    if getInventory then
-        local ok, inv = pcall(getInventory)
-        if ok and type(inv) == "table" then
-            for _, item in pairs(inv) do
-                if item.id == itemID then
-                    return item.amount or 0
-                end
+    end)
+    if seen == 0 then
+        local okLen, n = pcall(function() return #inv end)
+        if not okLen or not n or n <= 0 then pcall(function() n = inv:size() end) end
+        local maxI = (n and tonumber(n) and tonumber(n) > 0) and tonumber(n) or 400
+        local misses = 0
+        for i = 0, maxI do
+            local okI, it = pcall(function() return inv[i] end)
+            local id, amt = nil, nil
+            if okI then id, amt = readInvItemFields(it) end
+            if id and id > 0 then
+                misses = 0
+                seen = seen + 1
+                fn(id, amt or 0)
+            else
+                misses = misses + 1
+                if misses >= 50 and i > 5 then break end
             end
         end
     end
+    return seen
+end
+
+local function getInvCount(itemID)
+    local targetID = tonumber(itemID) or 0
+    if targetID <= 0 then return 0 end
+
+    -- A. C++ native GrowLauncher count (paling cepat & akurat jika sinkron)
+    local nativeCnt = 0
+    if growtopia and growtopia.checkInventoryCount then
+        local ok, cnt = pcall(growtopia.checkInventoryCount, targetID)
+        if ok and tonumber(cnt) and tonumber(cnt) > 0 then
+            return tonumber(cnt)
+        end
+    end
+
+    -- B. Scan memori tas (mendukung Lua table, nested .items, dan Sol2 userdata vector)
+    local total = 0
+    forEachInvItem(function(id, amt)
+        if id == targetID and amt > 0 then total = total + amt end
+    end)
+    if total > 0 then return total end
+
+    -- C. Fallback otoritatif C++ boolean dari GrowLauncher (docs/namespaces/growtopia.md)
+    -- Jika checkInventoryCount mengembalikan 0 karena lag sync packet, checkInventory() tetap true jika item ada di tas!
+    if growtopia and growtopia.checkInventory then
+        local ok, has = pcall(growtopia.checkInventory, targetID)
+        if ok and has == true then
+            return 1
+        end
+    end
+
     return 0
+end
+
+local function forEachWorldObject(fn)
+    local getFn = getObjectList or getObjects or getWorldObjects
+    if not getFn then return 0 end
+    local ok, objs = pcall(getFn)
+    if not ok or not objs then return 0 end
+
+    local container = objs
+    pcall(function()
+        if type(objs) == "table" and objs.objects then container = objs.objects end
+    end)
+
+    local seen = 0
+    local function processObj(obj)
+        if not obj then return end
+        local itemid, uid, amt, px, py = nil, nil, nil, nil, nil
+        pcall(function() itemid = tonumber(obj.itemid or obj.itemId or obj.item_id) end)
+        pcall(function() uid = tonumber(obj.id or obj.oid or obj.netid) end)
+        pcall(function() amt = tonumber(obj.amount or obj.count) or 1 end)
+        pcall(function()
+            if obj.pos then
+                px = tonumber(obj.pos.x or obj.pos[1])
+                py = tonumber(obj.pos.y or obj.pos[2])
+            end
+        end)
+        if not px then pcall(function() px = tonumber(obj.x or obj.posX) end) end
+        if not py then pcall(function() py = tonumber(obj.y or obj.posY) end) end
+
+        if itemid and itemid > 0 and uid and px and py then
+            seen = seen + 1
+            fn(itemid, uid, amt, px, py, obj)
+        end
+    end
+
+    pcall(function()
+        for _, obj in pairs(container) do
+            processObj(obj)
+        end
+    end)
+
+    if seen == 0 then
+        local okLen, n = pcall(function() return #container end)
+        if not okLen or not n or n <= 0 then pcall(function() n = container:size() end) end
+        local maxI = (n and tonumber(n) and tonumber(n) > 0) and tonumber(n) or 1000
+        local misses = 0
+        for i = 0, maxI do
+            local okI, obj = pcall(function() return container[i] end)
+            if okI and obj then
+                local prev = seen
+                processObj(obj)
+                if seen > prev then misses = 0 else misses = misses + 1 end
+                if misses >= 50 and i > 10 then break end
+            else
+                misses = misses + 1
+                if misses >= 50 and i > 10 then break end
+            end
+        end
+    end
+    return seen
+end
+
+local function findWorldObjectsByItemID(targetID)
+    targetID = tonumber(targetID) or 0
+    if targetID <= 0 then return {} end
+    local list = {}
+    forEachWorldObject(function(itemid, uid, amt, px, py, obj)
+        if itemid == targetID then
+            table.insert(list, {
+                itemid = itemid,
+                id     = uid,
+                amount = amt,
+                x      = px,
+                y      = py,
+                tileX  = math.floor((px + 10) / 32),
+                tileY  = math.floor((py + 10) / 32),
+                raw    = obj,
+            })
+        end
+    end)
+    return list
+end
+
+local function logInventoryDiagnostic(idList, tag)
+    local invType = "nil"
+    if getInventory then
+        local ok, inv = pcall(getInventory)
+        invType = ok and type(inv) or ("err:" .. tostring(inv))
+    end
+    local slots = forEachInvItem(function() end)
+    local parts = {}
+    for _, id in ipairs(idList or {}) do
+        id = tonumber(id) or 0
+        if id > 0 then
+            local nat = "-"
+            if growtopia and growtopia.checkInventoryCount then
+                local ok, c = pcall(growtopia.checkInventoryCount, id)
+                nat = ok and tostring(c) or "err"
+            end
+            local hasBool = false
+            if growtopia and growtopia.checkInventory then
+                local ok, h = pcall(growtopia.checkInventory, id)
+                hasBool = ok and h
+            end
+            local sc = 0
+            forEachInvItem(function(i, a) if i == id then sc = sc + a end end)
+            table.insert(parts, string.format("#%d[nat:%s,has:%s,scan:%d]", id, nat, tostring(hasBool), sc))
+        end
+    end
+    addLog(string.format("`o[BP Diag%s] invType=%s slots=%d | %s",
+        tag and (" " .. tag) or "", invType, slots, table.concat(parts, ", ")))
+end
+
+local function getWorldObjectsSafe()
+    local list = {}
+    forEachWorldObject(function(itemid, uid, amt, px, py, obj)
+        table.insert(list, obj)
+    end)
+    return list
 end
 
 local function refreshInventorySnapshot()
     local list = {}
     local doors = {}
-    if getInventory then
-        local ok, inv = pcall(getInventory)
-        if ok and type(inv) == "table" then
-            for _, item in pairs(inv) do
+    do
+        local invItems = {}
+        forEachInvItem(function(iid, iamt) table.insert(invItems, { id = iid, amount = iamt }) end)
+        do
+            for _, item in ipairs(invItems) do
                 if item and item.id and item.id > 0 and (item.amount or 0) > 0 then
                     local nm = resolveItemName(item.id)
                     local entry = {
@@ -3387,29 +3582,48 @@ end
 
 -- Only require tools that are NOT yet placed in the current world
 local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
-    -- 1. Validasi konfigurasi Door ID & Door Penghalang sudah dipilih
-    if CFG.use_id_door then
-        if not CFG.id_door_itemid or CFG.id_door_itemid <= 0 then
-            notifyToolRequest("Pilih Door ID", "Silakan pilih Item Door ID terlebih dahulu di menu '2. Lock & Door'!")
-            return false
+    -- Auto-fallback Door ID & Blocker jika belum diset atau jika tas memiliki Wooden Door (12) / alternatif valid
+    if CFG.use_id_door and not (existingSec and existingSec.has_id_door) then
+        local did = tonumber(CFG.id_door_itemid) or 0
+        if did <= 0 or getInvCount(did) <= 0 then
+            for _, altID in ipairs({ ITEM.WOODEN_DOOR, 102, 540, 766, 1240 }) do
+                if altID ~= did and getInvCount(altID) > 0 then
+                    addLog(string.format("`2[Auto-Pilih Door ID] `wMenemukan %s (#%d) di tas, dijadikan Door ID!", resolveItemName(altID), altID))
+                    CFG.id_door_itemid = altID
+                    did = altID
+                    persistConfig()
+                    break
+                end
+            end
         end
+        if did <= 0 then CFG.id_door_itemid = ITEM.WOODEN_DOOR end
         if tostring(CFG.door_id or ""):gsub("%s+", "") == "" then
-            notifyToolRequest("Isi ID Door", "Silakan isi Target ID Door di menu '2. Lock & Door'!")
-            return false
+            CFG.door_id = "DF123"
         end
     end
-    if CFG.use_blocker_door then
-        if not CFG.blocker_door_itemid or CFG.blocker_door_itemid <= 0 then
-            notifyToolRequest("Pilih Door Penghalang", "Silakan pilih Item Door Penghalang terlebih dahulu di menu '2. Lock & Door'!")
-            return false
+
+    if CFG.use_blocker_door and not (existingSec and existingSec.has_left_blocker) then
+        local bid = tonumber(CFG.blocker_door_itemid) or 0
+        if bid <= 0 or getInvCount(bid) <= 0 then
+            for _, altID in ipairs({ ITEM.WOODEN_DOOR, 828, 1240, 558, 16, 540, 102 }) do
+                if altID ~= bid and getInvCount(altID) > 0 then
+                    addLog(string.format("`2[Auto-Pilih Blocker] `wMenemukan %s (#%d) di tas, dijadikan Penghalang!", resolveItemName(altID), altID))
+                    CFG.blocker_door_itemid = altID
+                    bid = altID
+                    persistConfig()
+                    break
+                end
+            end
         end
+        if bid <= 0 then CFG.blocker_door_itemid = ITEM.WOODEN_DOOR end
     end
 
     local needed = {}
     local neededOrder = {}
     local neededRoles = {}
     local function addNeed(id, count, roleLabel)
-        if not id or id <= 0 then return end
+        id = tonumber(id) or 0
+        if id <= 0 then return end
         if not needed[id] then
             table.insert(neededOrder, id)
             neededRoles[id] = roleLabel
@@ -3431,10 +3645,8 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
     if CFG.use_id_door and not (existingSec and existingSec.has_id_door) then
         addNeed(CFG.id_door_itemid, 1, "Door ID")
     end
-    if CFG.use_blocker_door then
-        if not (existingSec and existingSec.has_left_blocker) then
-            addNeed(CFG.blocker_door_itemid, 1, "Penghalang Kiri")
-        end
+    if CFG.use_blocker_door and not (existingSec and existingSec.has_left_blocker) then
+        addNeed(CFG.blocker_door_itemid, 1, "Penghalang Kiri")
     end
 
     local function collectMissingText()
@@ -3462,6 +3674,7 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
 
     local missingStr = table.concat(missingBefore, ", ")
     addLog("Request Alat dibutuhkan: " .. missingStr)
+    logInventoryDiagnostic(neededOrder, "Lock")
 
     if CFG.storage_pack_world == "" then
         local hint = doorHintBefore and " Atau silakan pilih Door ID / Door Penghalang lain di menu Lock & Door." or ""
@@ -3486,31 +3699,53 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
     setAutoCollectActive(false)
     safeSleep(1100)
 
-    -- Tahap 1: Ambil seluruh alat yang kurang dulu (pakai koordinat obj.pos), jangan drop dulu supaya tidak terinjak saat jalan ke stack lain
-    local objs = getWorldObjectsSafe()
-    if objs then
-        for _, needID in ipairs(neededOrder) do
-            local reqAmt = needed[needID]
-            if getInvCount(needID) < reqAmt then
-                for _, obj in pairs(objs) do
-                    if obj and obj.itemid == needID and obj.pos and obj.id then
-                        local ox = math.floor((obj.pos.x + 10) / 32)
-                        local oy = math.floor((obj.pos.y + 10) / 32)
-                        addLog(string.format("Mengambil %s di (%d, %d) [Butuh %dx]", resolveItemName(needID), ox, oy, reqAmt))
-                        moveSafeTo(ox, oy)
-                        safeSleep(300)
-                        setAutoCollectActive(false)
-                        pcall(sendPacketRaw, false, {
-                            type  = 11,
-                            value = obj.id,
-                            x     = obj.pos.x,
-                            y     = obj.pos.y,
-                        })
-                        safeSleep(380)
-                        if getInvCount(needID) >= reqAmt then
-                            break
-                        end
+    -- Tunggu hingga world objects tersinkronisasi dari server (maks 2.5 detik)
+    local waited = 0
+    while waited < 2500 do
+        safeSleep(300)
+        waited = waited + 300
+        if forEachWorldObject(function() end) > 0 then break end
+    end
+    safeSleep(200)
+
+    -- Tahap 1: Ambil seluruh alat yang kurang via findWorldObjectsByItemID (mendukung table & userdata)
+    for _, needID in ipairs(neededOrder) do
+        local reqAmt = needed[needID]
+        if getInvCount(needID) < reqAmt then
+            local foundObjs = findWorldObjectsByItemID(needID)
+            -- Jika Door/Blocker spesifik tidak ada di lantai storage, cari pintu alternatif di lantai storage!
+            if #foundObjs == 0 and (needID == CFG.blocker_door_itemid or needID == CFG.id_door_itemid) then
+                for _, altID in ipairs({ ITEM.WOODEN_DOOR, 102, 828, 558, 16, 540, 1240 }) do
+                    local altObjs = findWorldObjectsByItemID(altID)
+                    if #altObjs > 0 then
+                        foundObjs = altObjs
+                        if needID == CFG.blocker_door_itemid then CFG.blocker_door_itemid = altID end
+                        if needID == CFG.id_door_itemid then CFG.id_door_itemid = altID end
+                        persistConfig()
+                        break
                     end
+                end
+            end
+
+            for _, obj in ipairs(foundObjs) do
+                addLog(string.format("Mengambil %s di (%d, %d) [UID: %d, Butuh %dx]", resolveItemName(obj.itemid), obj.tileX, obj.tileY, obj.id, reqAmt))
+                moveSafeTo(obj.tileX, obj.tileY)
+                safeSleep(250)
+                -- Matikan Anti Collect sebelum kirim packet 11 agar objek berhasil masuk ke tas!
+                if editToggle then
+                    pcall(editToggle, "Anti Collect", false)
+                    pcall(editToggle, "Anti-Collect", false)
+                end
+                STATE.anti_take_active = false
+                pcall(sendPacketRaw, false, {
+                    type  = 11,
+                    value = obj.id,
+                    x     = obj.x,
+                    y     = obj.y,
+                })
+                safeSleep(350)
+                if getInvCount(needID) >= reqAmt then
+                    break
                 end
             end
         end
@@ -3763,24 +3998,55 @@ end
 
 local function resolvePickedItemID(value)
     if not value or value == "" then return nil end
-    if type(value) == "table" then
-        value = value.id or value.itemID or value.itemid or value.value or value.name
+    local vType = type(value)
+    if vType == "table" or vType == "userdata" then
+        local ok, v = pcall(function()
+            return value.id or value.itemID or value.itemid or value.item_id or value.value or value.item or value.name
+        end)
+        if ok and v ~= nil then value = v end
     end
     local num = tonumber(value)
     if num and num > 0 then
         return math.floor(num)
     end
     if type(value) == "string" and value ~= "" then
-        local sNum = tonumber(cleanItemName(value))
+        local clean = cleanItemName(value)
+        local sNum = tonumber(clean)
         if sNum and sNum > 0 then
             return math.floor(sNum)
         end
-        local lookedUp = lookupItemIDByName(value)
+        local leadNum = clean:match("^(%d+)")
+        if leadNum and tonumber(leadNum) and tonumber(leadNum) > 0 then
+            return math.floor(tonumber(leadNum))
+        end
+        local embedNum = clean:match("%((%d+)%)") or clean:match("#(%d+)") or clean:match("(%d+)")
+        if embedNum and tonumber(embedNum) and tonumber(embedNum) > 0 then
+            return math.floor(tonumber(embedNum))
+        end
+        local lookedUp = lookupItemIDByName(clean)
         if lookedUp and lookedUp > 0 then
             return lookedUp
         end
     end
     return nil
+end
+
+local function readGLItemOrInt(alias, fallback)
+    if getValue then
+        for _, t in ipairs({ 1, 5, 2 }) do
+            local ok, val = pcall(getValue, t, alias)
+            if ok and val ~= nil and tostring(val) ~= "" and tostring(val) ~= "0" then
+                local res = resolvePickedItemID(val)
+                if res and res > 0 then return res end
+            end
+        end
+        local ok0, val0 = pcall(getValue, alias)
+        if ok0 and val0 ~= nil and tostring(val0) ~= "" and tostring(val0) ~= "0" then
+            local res = resolvePickedItemID(val0)
+            if res and res > 0 then return res end
+        end
+    end
+    return fallback
 end
 
 local function syncInputsFromGL()
@@ -3806,6 +4072,13 @@ local function syncInputsFromGL()
     if dId ~= "" then CFG.door_id = dId end
     local dLbl = readGLString("df_door_label", "")
     if dLbl ~= "" then CFG.door_label = dLbl end
+
+    -- Sinkronisasi Item Door ID & Penghalang
+    local dItemId = readGLItemOrInt("df_input_id_door", nil) or readGLItemOrInt("df_pick_id_door", nil)
+    if dItemId and dItemId > 0 then CFG.id_door_itemid = dItemId end
+
+    local bItemId = readGLItemOrInt("df_input_blocker", nil) or readGLItemOrInt("df_pick_blocker", nil)
+    if bItemId and bItemId > 0 then CFG.blocker_door_itemid = bItemId end
     CFG.world_mode = readGLBool("df_world_random", CFG.world_mode == "random") and "random" or "manual"
     local rTgt = tonumber(readGLString("df_random_target", ""))
     if rTgt and rTgt >= 1 then CFG.random_target_count = math.floor(rTgt) end
@@ -5269,6 +5542,7 @@ local function startAutoDF()
     local okCoro, errCoro = pcall(runCoroutine, function()
         syncInputsFromGL()
         setStatus("Bot Berjalan", "Auto Dirt Farm by Boren Store aktif...")
+        logInventoryDiagnostic({ ITEM.WORLD_LOCK, ITEM.SMALL_LOCK, ITEM.JAMMER, CFG.id_door_itemid, CFG.blocker_door_itemid }, "Start")
         applyCheatToggles()
 
         while STATE.running do
@@ -6122,3 +6396,8 @@ end
 if sendNotification then
     pcall(sendNotification, "Boren Store Auto DF siap!")
 end
+
+_G.findWorldObjectsByItemID = findWorldObjectsByItemID
+_G.getInvCount = getInvCount
+
+_G.CFG = CFG
