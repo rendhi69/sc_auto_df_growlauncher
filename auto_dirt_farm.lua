@@ -1241,12 +1241,22 @@ local function refreshInventorySnapshot()
 end
 
 local function findMainDoor()
-    if not getTiles then return nil, nil end
-    local ok, tiles = pcall(getTiles)
-    if not ok or not tiles then return nil, nil end
-    for _, t in pairs(tiles) do
-        if t and t.fg == ITEM.MAIN_DOOR then
-            return t.x, t.y
+    if getTiles then
+        local ok, tiles = pcall(getTiles)
+        if ok and tiles then
+            for _, t in pairs(tiles) do
+                if t and t.fg == ITEM.MAIN_DOOR then
+                    return t.x, t.y
+                end
+            end
+        end
+    end
+    for y = 0, 59 do
+        for x = 0, 99 do
+            local ok, t = pcall(getTile, x, y)
+            if ok and t and t.fg == ITEM.MAIN_DOOR then
+                return x, y
+            end
         end
     end
     return nil, nil
@@ -1306,13 +1316,23 @@ local function isProtectedEnclosure(tx, ty, doorX, doorY)
         return true
     end
     if not doorX or not doorY then return false end
-    -- Gambar 1: Main Door (dx,dy), Bedrock (dx,dy+1), SL (dx,dy-1), WL (dx+1,dy), Jammer (dx-1,dy-1), Blocker Kiri (dx-1,dy)
+    -- Standar Baru (Chat 4) & Kompatibilitas Legacy:
+    -- White Door (dx, dy) & Bedrock (dx, dy+1)
+    -- Penghalang di atas White Door (dx, dy-1) [kanan SL]
+    -- Signal Jammer (dx-1, dy) [kiri White Door] & Bedrock bawah Jammer (dx-1, dy+1)
+    -- Small Lock (dx-1, dy-1) [atas Jammer, kiri Penghalang]
+    -- World Lock (dx-2, dy) [kiri Jammer] & Bedrock bawah WL (dx-2, dy+1) & Air atas WL (dx-2, dy-1)
+    -- Posisi Legacy: WL (dx+1, dy), SL (dx, dy-1), Jammer (dx-1, dy-1), Blocker (dx-1, dy)
     if (tx == doorX and ty == doorY)
         or (tx == doorX and ty == doorY + 1)
         or (tx == doorX and ty == doorY - 1)
-        or (tx == doorX + 1 and ty == doorY)
+        or (tx == doorX - 1 and ty == doorY)
         or (tx == doorX - 1 and ty == doorY - 1)
-        or (tx == doorX - 1 and ty == doorY) then
+        or (tx == doorX - 1 and ty == doorY + 1)
+        or (tx == doorX - 2 and ty == doorY)
+        or (tx == doorX - 2 and ty == doorY - 1)
+        or (tx == doorX - 2 and ty == doorY + 1)
+        or (tx == doorX + 1 and ty == doorY) then
         return true
     end
     return false
@@ -1323,7 +1343,7 @@ local function isInSecurityMoat(tx, ty, doorX, doorY)
         return true
     end
     if not doorX or not doorY then return false end
-    if math.abs(tx - doorX) <= 2 and math.abs(ty - doorY) <= 2 then
+    if (tx >= doorX - 3 and tx <= doorX + 2) and (ty >= doorY - 2 and ty <= doorY + 2) then
         return true
     end
     return false
@@ -3127,57 +3147,113 @@ local function inspectWorldSecurityState(doorX, doorY)
         has_sl            = false,
         has_jammer        = false,
         has_id_door       = false,
+        has_blocker       = false,
         has_left_blocker  = false,
         has_left_dirt     = false,
         all_ready         = false,
+        wl_x              = nil,
+        wl_y              = nil,
+        sl_x              = nil,
+        sl_y              = nil,
+        jammer_x          = nil,
+        jammer_y          = nil,
+        blocker_x         = nil,
+        blocker_y         = nil,
     }
     if not doorX or not doorY then return info end
 
-    -- 1. Check WL at (doorX + 1, doorY) [kanan White Door sesuai Gambar 1]
-    if doorX + 1 <= 99 then
-        local ok, t = pcall(getTile, doorX + 1, doorY)
-        if ok and t and (t.fg == ITEM.WORLD_LOCK or OTHER_LOCKS[t.fg]) then
-            info.has_wl = true
+    -- 1. Check World Lock:
+    -- Posisi Standar Baru: (doorX - 2, doorY) [kiri Jammer]
+    -- Posisi Legacy: (doorX + 1, doorY) [kanan White Door]
+    for _, offset in ipairs({ { -2, 0 }, { 1, 0 }, { -1, 0 } }) do
+        local checkX = doorX + offset[1]
+        local checkY = doorY + offset[2]
+        if checkX >= 0 and checkX <= 99 and checkY >= 0 and checkY <= 59 then
+            local ok, t = pcall(getTile, checkX, checkY)
+            if ok and t and (t.fg == ITEM.WORLD_LOCK or OTHER_LOCKS[t.fg]) then
+                info.has_wl = true
+                info.wl_x = checkX
+                info.wl_y = checkY
+                break
+            end
+        end
+    end
+    -- Fallback: Scan jika ada lock di sekitar radius 3 dari White Door
+    if not info.has_wl then
+        for dy = -2, 2 do
+            for dx = -3, 3 do
+                local cx, cy = doorX + dx, doorY + dy
+                if cx >= 0 and cx <= 99 and cy >= 0 and cy <= 59 then
+                    local ok, t = pcall(getTile, cx, cy)
+                    if ok and t and (t.fg == ITEM.WORLD_LOCK or (OTHER_LOCKS[t.fg] and t.fg ~= ITEM.SMALL_LOCK)) then
+                        info.has_wl = true
+                        info.wl_x = cx
+                        info.wl_y = cy
+                        break
+                    end
+                end
+            end
+            if info.has_wl then break end
         end
     end
 
-    -- 2. Check SL at (doorX, doorY - 1) [tepat di atas White Door]
-    if doorY - 1 >= 0 then
-        local ok, t = pcall(getTile, doorX, doorY - 1)
-        if ok and t and t.fg == ITEM.SMALL_LOCK then
-            info.has_sl = true
+    -- 2. Check Signal Jammer:
+    -- Posisi Standar Baru: (doorX - 1, doorY) [kiri White Door]
+    -- Posisi Legacy: (doorX - 1, doorY - 1)
+    for _, offset in ipairs({ { -1, 0 }, { -1, -1 } }) do
+        local checkX = doorX + offset[1]
+        local checkY = doorY + offset[2]
+        if checkX >= 0 and checkX <= 99 and checkY >= 0 and checkY <= 59 then
+            local ok, t = pcall(getTile, checkX, checkY)
+            if ok and t and (t.fg == ITEM.JAMMER or t.fg == 226) then
+                info.has_jammer = true
+                info.jammer_x = checkX
+                info.jammer_y = checkY
+                break
+            end
         end
     end
 
-    -- 3. Check Jammer at (doorX - 1, doorY - 1) [kiri-atas White Door]
-    if doorX - 1 >= 0 and doorY - 1 >= 0 then
-        local ok, t = pcall(getTile, doorX - 1, doorY - 1)
-        if ok and t and t.fg == ITEM.JAMMER then
-            info.has_jammer = true
+    -- 3. Check Small Lock:
+    -- Posisi Standar Baru: (doorX - 1, doorY - 1) [di atas Jammer]
+    -- Posisi Legacy: (doorX, doorY - 1) [di atas White Door]
+    for _, offset in ipairs({ { -1, -1 }, { 0, -1 } }) do
+        local checkX = doorX + offset[1]
+        local checkY = doorY + offset[2]
+        if checkX >= 0 and checkX <= 99 and checkY >= 0 and checkY <= 59 then
+            local ok, t = pcall(getTile, checkX, checkY)
+            if ok and t and (t.fg == ITEM.SMALL_LOCK or OTHER_LOCKS[t.fg]) then
+                info.has_sl = true
+                info.sl_x = checkX
+                info.sl_y = checkY
+                break
+            end
         end
     end
 
-    -- 4. Check Door ID at (0, 0) [pojok kiri paling atas sesuai Gambar 2]
+    -- 4. Check Penghalang (Blocker):
+    -- Posisi Standar Baru: (doorX, doorY - 1) [di atas White Door, di kanan SL]
+    -- Posisi Legacy: (doorX - 1, doorY) [di kiri White Door]
+    for _, offset in ipairs({ { 0, -1 }, { -1, 0 } }) do
+        local checkX = doorX + offset[1]
+        local checkY = doorY + offset[2]
+        if checkX >= 0 and checkX <= 99 and checkY >= 0 and checkY <= 59 then
+            local ok, t = pcall(getTile, checkX, checkY)
+            if ok and t and (t.fg == CFG.blocker_door_itemid or (KNOWN_BLOCKER_IDS and KNOWN_BLOCKER_IDS[t.fg]) or isDoorOrEntranceItem(t.fg)) then
+                info.has_blocker = true
+                info.has_left_blocker = true
+                info.blocker_x = checkX
+                info.blocker_y = checkY
+                break
+            end
+        end
+    end
+
+    -- 5. Check Door ID di (0, 0):
     do
         local ok, t = pcall(getTile, 0, 0)
-        if ok and t and (t.fg == CFG.id_door_itemid or KNOWN_ID_DOOR_IDS[t.fg]) then
+        if ok and t and (t.fg == CFG.id_door_itemid or (KNOWN_ID_DOOR_IDS and KNOWN_ID_DOOR_IDS[t.fg]) or isDoorOrEntranceItem(t.fg)) then
             info.has_id_door = true
-        end
-    end
-
-    -- 5. Check Left Blocker at (doorX - 1, doorY) [hanya sisi kiri White Door]
-    if doorX - 1 >= 0 then
-        local ok, t = pcall(getTile, doorX - 1, doorY)
-        if ok and t and (t.fg == CFG.blocker_door_itemid or KNOWN_BLOCKER_IDS[t.fg]) then
-            info.has_left_blocker = true
-        end
-    end
-
-    -- 6. Check Left Dirt at (doorX - 1, doorY + 1)
-    if doorX - 1 >= 0 then
-        local ok, t = pcall(getTile, doorX - 1, doorY + 1)
-        if ok and t and t.fg ~= 0 then
-            info.has_left_dirt = true
         end
     end
 
@@ -3185,7 +3261,7 @@ local function inspectWorldSecurityState(doorX, doorY)
     local slOk  = (not CFG.use_sl) or info.has_sl
     local jamOk = (not CFG.use_jammer) or info.has_jammer
     local idOk  = (not CFG.use_id_door) or info.has_id_door
-    local blkOk = (not CFG.use_blocker_door) or info.has_left_blocker
+    local blkOk = (not CFG.use_blocker_door) or info.has_blocker or info.has_left_blocker
 
     info.all_ready = (wlOk and slOk and jamOk and idOk and blkOk)
     return info
@@ -4262,125 +4338,157 @@ end
 -- 9. DIRT FARM CONSTRUCTION STAGES (GAMBAR 2 + VALIDATION + AUTO-RESUME)
 -- ============================================================================
 
--- Stage A: Setup Locks, Jammer, Door ID & 2 Blocker Doors EXACTLY like contoh benar (dengan moat Empty Air di sekeliling & bawah WL/Bedrock)
--- If already installed in the world, skips re-placing and continues DF directly!
+local function checkAndConfigureDoorID()
+    local targetID = tostring(CFG.door_id or "DF"):gsub("%s+", "")
+    local targetLabel = tostring(CFG.door_label or targetID)
+    if targetID == "" then return "" end
+
+    local teleWait = math.max(300, tonumber(CFG.delay_tele_door) or 1500)
+    setStatus("Jeda Tele Door (0,0)", string.format("Jeda %d ms sebelum cek Door ID di (0,0)...", teleWait))
+    safeSleep(teleWait)
+    if CFG.use_modfly and editToggle then pcall(editToggle, "ModFly", true) end
+    safeSleep(150)
+    moveSafeTo(1, 0)
+
+    local ok0, t0 = pcall(getTile, 0, 0)
+    local needPlace = (not ok0) or (not t0) or (t0.fg == 0) or (t0.fg ~= CFG.id_door_itemid and not isDoorOrEntranceItem(t0.fg))
+
+    if needPlace then
+        setStatus("Pasang Door ID (0,0)", "Menaruh Door di (0, 0)")
+        breakTileCompletely(0, 0, true, false, 1)
+        placeAndValidateSecurityTile(0, 0, CFG.id_door_itemid, "Door ID (0,0)", 1, 0)
+        safeSleep(300)
+        validateAndEditDoorTile(0, 0, targetID, targetLabel, 1, 0)
+        return targetID
+    end
+
+    local idAlreadyMatching = false
+    if t0 and t0.extra then
+        if t0.extra.target == targetID or (t0.extra.label and t0.extra.label == targetLabel) then
+            idAlreadyMatching = true
+        end
+    end
+
+    if idAlreadyMatching then
+        addLog(string.format("`2[Door ID Validasi] `wDoor ID di (0,0) sudah terpasang & sesuai (ID='%s').", targetID))
+    else
+        addLog(string.format("`e[Door ID Update] `oDoor ID di (0,0) belum sesuai. Mengatur ulang ke '%s'...", targetID))
+        validateAndEditDoorTile(0, 0, targetID, targetLabel, 1, 0)
+    end
+
+    return targetID
+end
+
+-- Stage A: Setup Locks, Jammer, Door ID & Blocker Doors (Standar Baru Chat 4)
+-- VALIDASI: Jika sudah terpasang, otomatis skip pembuatan ulang & langsung lanjut proses DF!
 local function setupWorldLocks(doorX, doorY, existingSec)
     local sec = existingSec or inspectWorldSecurityState(doorX, doorY)
-    if sec.all_ready then
-        addLog("Deteksi World: Semua Lock, Jammer & Door sudah terpasang! Langsung lanjut proses DF...")
+    
+    local locksAlreadyPlaced = sec.all_ready or (sec.has_wl and sec.has_sl and sec.has_jammer and (sec.has_blocker or sec.has_left_blocker))
+    if locksAlreadyPlaced then
+        addLog("`2[Lock Validasi] `wKunci world DF sudah terpasang lengkap (WL, Jammer, SL, Penghalang ada). Melewati pembuatan ulang.")
         if sendNotification then pcall(sendNotification, "Lock & Jammer sudah ada! Lanjut DF...") end
-        return CFG.use_id_door and CFG.door_id or ""
+        
+        -- 1. Re-apply Small Lock jika ada
+        if CFG.use_sl and sec.has_sl then
+            local slX = sec.sl_x or (doorX - 1)
+            local slY = sec.sl_y or (doorY - 1)
+            setStatus("Re-apply Small Lock", "Re-apply SL yang sudah ada...")
+            validateAndApplySmallLock(slX, slY, CFG.sl_ignore_air, CFG.sl_public, doorX, doorY)
+            safeSleep(200)
+        end
+
+        -- 2. Pastikan WL public
+        if CFG.use_wl and sec.has_wl and CFG.wl_public then
+            local wlX = sec.wl_x or (doorX - 2)
+            local wlY = sec.wl_y or doorY
+            validateAndEditWorldLock(wlX, wlY, true, doorX, doorY)
+            safeSleep(200)
+        end
+
+        -- 3. Cek Door ID di (0, 0)
+        local activeDoorID = ""
+        if CFG.use_id_door then
+            activeDoorID = checkAndConfigureDoorID()
+        end
+
+        return activeDoorID
     end
 
-    setStatus("Setup Lock & Moat", string.format("Break dirt sekitar Main Door (%d, %d) sesuai susunan Gambar 1", doorX, doorY))
+    -- JIKA BELUM TERPASANG LENGKAP: Pasang formasi standar baru (Chat 4)
+    setStatus("Setup Lock", string.format("Persiapan slot kunci baru di sekitar White Door (%d, %d)", doorX, doorY))
 
-    -- Helper internal: hanya break jika bukan Bedrock, Main Door, atau Lock/Blocker yang sudah terpasang
-    local function isKeptSecurityTile(tx, ty)
-        if tx == doorX and ty == doorY then return true end
-        if tx == doorX and ty == doorY + 1 then return true end
-        if sec.has_sl and tx == doorX and ty == doorY - 1 then return true end
-        if sec.has_wl and tx == doorX + 1 and ty == doorY then return true end
-        if sec.has_jammer and tx == doorX - 1 and ty == doorY - 1 then return true end
-        if sec.has_left_blocker and tx == doorX - 1 and ty == doorY then return true end
-        return false
+    -- Bersihkan slot yang belum terisi sesuai formasi standar baru:
+    -- Penghalang di atas White Door: (doorX, doorY - 1)
+    if CFG.use_blocker_door and not (sec.has_blocker or sec.has_left_blocker) and doorY - 1 >= 0 then
+        breakTileCompletely(doorX, doorY - 1, true, true, 1)
+    end
+    -- Jammer di kiri White Door: (doorX - 1, doorY)
+    if not sec.has_jammer and doorX - 1 >= 0 then
+        breakTileCompletely(doorX - 1, doorY, true, true, 1)
+    end
+    -- Small Lock di kiri Penghalang / di atas Jammer: (doorX - 1, doorY - 1)
+    if not sec.has_sl and doorX - 1 >= 0 and doorY - 1 >= 0 then
+        breakTileCompletely(doorX - 1, doorY - 1, true, true, 1)
+    end
+    -- World Lock di 2-kiri White Door: (doorX - 2, doorY)
+    if not sec.has_wl and doorX - 2 >= 0 then
+        breakTileCompletely(doorX - 2, doorY, true, true, 1)
+    end
+    -- Slot di atas WL: (doorX - 2, doorY - 1) dikosongkan
+    if doorX - 2 >= 0 and doorY - 1 >= 0 then
+        breakTileCompletely(doorX - 2, doorY - 1, true, true, 1)
     end
 
-    -- 0A. Break RING LUAR (Moat 1-tile Empty Air: fg=0 & bg=0) mengelilingi cluster Lock (termasuk kanan-atas & kanan-bawah WL)
-    for my = doorY - 2, doorY + 2 do
-        for mx = doorX - 2, doorX + 2 do
-            local isOuterRing = (math.abs(mx - doorX) == 2 or math.abs(my - doorY) == 2)
-            local isLeftBedrock = (mx == doorX - 1 and my == doorY + 1)
-            local isRightAboveWL = (mx == doorX + 1 and my == doorY - 1)
-            local isRightBelowWL = (mx == doorX + 1 and my == doorY + 1)
-            if (isOuterRing or isLeftBedrock or isRightAboveWL or isRightBelowWL) and mx >= 0 and mx <= 99 and my >= 0 and my <= 59 then
-                if not isKeptSecurityTile(mx, my) then
-                    local prefDir = (mx <= doorX) and -1 or 1
-                    breakTileCompletely(mx, my, true, true, prefDir)
-                end
-            end
+    -- ==================== URUTAN SESUAI FORMULA STANDAR FARM (Chat 4) ====================
+    -- 1. Pasang Penghalang di atas White Door (doorX, doorY - 1) [di kanan SL]
+    if CFG.use_blocker_door and doorY - 1 >= 0 then
+        if not (sec.has_blocker or sec.has_left_blocker) then
+            setStatus("Pasang Penghalang", string.format("Menaruh %s di atas White Door (%d, %d)", resolveItemName(CFG.blocker_door_itemid), doorX, doorY - 1))
+            placeAndValidateSecurityTile(doorX, doorY - 1, CFG.blocker_door_itemid, "Penghalang", doorX, doorY)
+            safeSleep(200)
         end
     end
 
-    -- 0B. Bersihkan slot dalam Gambar 1 yang BELUM terisi item yang sesuai
-    local innerToPrepare = {}
-    if not sec.has_sl then table.insert(innerToPrepare, {doorX, doorY - 1, true}) end
-    if not sec.has_wl then table.insert(innerToPrepare, {doorX + 1, doorY, true}) end
-    if not sec.has_jammer then table.insert(innerToPrepare, {doorX - 1, doorY - 1, true}) end
-    if not sec.has_left_blocker then table.insert(innerToPrepare, {doorX - 1, doorY, true}) end
-
-    for _, c in ipairs(innerToPrepare) do
-        local cx, cy, clearBg = c[1], c[2], c[3]
-        if cx >= 0 and cx <= 99 and cy >= 0 and cy <= 59 then
-            breakTileCompletely(cx, cy, true, clearBg, 1)
-        end
-    end
-
-    -- 1. Pasang & Validasi Penghalang Kiri di (doorX - 1, doorY) (sisi kanan tidak pakai blocker, langsung WL)
-    if CFG.use_blocker_door then
-        if doorX - 1 >= 0 and not sec.has_left_blocker then
-            setStatus("Pasang Penghalang Kiri", string.format("Menaruh %s di (%d, %d)", resolveItemName(CFG.blocker_door_itemid), doorX - 1, doorY))
-            placeAndValidateSecurityTile(doorX - 1, doorY, CFG.blocker_door_itemid, "Penghalang Kiri", doorX - 2, doorY)
-        end
-    end
-
-    -- 2. Pasang & Validasi Signal Jammer di (doorX - 1, doorY - 1) + Punch 1x agar Jammer aktif
+    -- 2. Pasang Signal Jammer di (doorX - 1, doorY) + punch 1x agar aktif
     if CFG.use_jammer and doorX - 1 >= 0 then
         if not sec.has_jammer then
-            setStatus("Pasang Jammer", string.format("Menaruh Signal Jammer di (%d, %d)", doorX - 1, doorY - 1))
-            local jamPlaced = placeAndValidateSecurityTile(doorX - 1, doorY - 1, ITEM.JAMMER, "Signal Jammer", doorX - 1, math.max(0, doorY - 2))
-            if jamPlaced then
-                safeSleep(300)
-                sendRawAction(doorX - 1, doorY - 1, ITEM.PUNCH)
-                safeSleep(350)
-                addLog(string.format("Validasi Jammer OK: Signal Jammer aktif di (%d, %d)", doorX - 1, doorY - 1))
-            end
-        else
-            addLog("Signal Jammer sudah terpasang di world ini.")
-        end
-    end
-
-    -- 3. Pasang & Validasi World Lock (WL) di kanan White Door (doorX + 1, doorY) + Set PUBLIC
-    if CFG.use_wl and doorX + 1 <= 99 then
-        if not sec.has_wl then
-            setStatus("Pasang WL", string.format("Menaruh & Set Public WL di (%d, %d)", doorX + 1, doorY))
-            placeAndValidateSecurityTile(doorX + 1, doorY, ITEM.WORLD_LOCK, "World Lock (WL)", doorX + 2, doorY)
-        end
-        validateAndEditWorldLock(doorX + 1, doorY, CFG.wl_public, doorX + 2, doorY)
-    end
-
-    -- 4. Pasang & Apply Small Lock (SL) Private di atas White Door (doorX, doorY - 1)
-    if CFG.use_sl then
-        if doorY - 2 >= 0 then
-            breakTileCompletely(doorX, doorY - 2, true, true, 1)
-        end
-        if not sec.has_sl then
-            setStatus("Pasang Small Lock (Private)", string.format("Menaruh SL di (%d, %d)", doorX, doorY - 1))
-            placeAndValidateSecurityTile(doorX, doorY - 1, ITEM.SMALL_LOCK, "Small Lock (SL)", doorX, math.max(0, doorY - 2))
-        end
-        setStatus("Apply Small Lock", "Set Private + Ignore Empty Air + Re-apply Lock")
-        validateAndApplySmallLock(doorX, doorY - 1, CFG.sl_ignore_air, CFG.sl_public, doorX, math.max(0, doorY - 2))
-    end
-
-    -- 5. Jeda Tele + Fly ke pojok kiri atas (0, 0) untuk pasang & edit Door ID (Gambar 2)
-    local activeDoorID = ""
-    if CFG.use_id_door then
-        local teleWait = math.max(300, tonumber(CFG.delay_tele_door) or 1500)
-        setStatus("Jeda Tele Door (0,0)", string.format("Jeda %d ms sebelum Fly ke (0, 0) untuk pasang Door ID...", teleWait))
-        safeSleep(teleWait)
-        if editToggle then pcall(editToggle, "ModFly", true) end
-        safeSleep(150)
-
-        if not sec.has_id_door then
-            setStatus("Pasang Door ID (0,0)", string.format("Fly ke pojok kiri atas & menaruh %s di (0, 0)", resolveItemName(CFG.id_door_itemid)))
-            breakTileCompletely(0, 0, true, false, 1)
-            placeAndValidateSecurityTile(0, 0, CFG.id_door_itemid, "Door ID (0,0)", 1, 0)
+            setStatus("Pasang Jammer", string.format("Menaruh Jammer di (%d, %d)", doorX - 1, doorY))
+            placeAndValidateSecurityTile(doorX - 1, doorY, ITEM.JAMMER, "Signal Jammer", doorX, doorY)
             safeSleep(300)
         end
-        validateAndEditDoorTile(0, 0, CFG.door_id, CFG.door_label, 1, 0)
-        safeSleep(250)
-        activeDoorID = CFG.door_id
+        sendRawAction(doorX - 1, doorY, ITEM.PUNCH)
+        safeSleep(350)
+        addLog(string.format("`2[Jammer OK] `wSignal Jammer aktif di (%d, %d)", doorX - 1, doorY))
+    end
 
-        if editToggle then pcall(editToggle, "ModFly", CFG.use_modfly == true) end
+    -- 3. Pasang Small Lock di (doorX - 1, doorY - 1) [di kiri Penghalang, di atas Jammer] + Set Private & Re-apply Lock
+    if CFG.use_sl and doorX - 1 >= 0 and doorY - 1 >= 0 then
+        if not sec.has_sl then
+            setStatus("Pasang Small Lock", string.format("Menaruh SL di (%d, %d)", doorX - 1, doorY - 1))
+            placeAndValidateSecurityTile(doorX - 1, doorY - 1, ITEM.SMALL_LOCK, "Small Lock", doorX, doorY)
+            safeSleep(200)
+        end
+        setStatus("Apply Small Lock", "Set Private + Ignore Empty Air + Re-apply")
+        validateAndApplySmallLock(doorX - 1, doorY - 1, CFG.sl_ignore_air, CFG.sl_public, doorX, doorY)
+        safeSleep(200)
+    end
+
+    -- 4. Pasang World Lock di (doorX - 2, doorY) + Set Public
+    if CFG.use_wl and doorX - 2 >= 0 then
+        if not sec.has_wl then
+            setStatus("Pasang WL", string.format("Menaruh WL di (%d, %d)", doorX - 2, doorY))
+            placeAndValidateSecurityTile(doorX - 2, doorY, ITEM.WORLD_LOCK, "World Lock", doorX, doorY)
+            safeSleep(200)
+        end
+        validateAndEditWorldLock(doorX - 2, doorY, CFG.wl_public, doorX, doorY)
+        safeSleep(200)
+    end
+
+    -- 5. Pasang Door ID di (0, 0)
+    local activeDoorID = ""
+    if CFG.use_id_door then
+        activeDoorID = checkAndConfigureDoorID()
     end
 
     return activeDoorID
@@ -5474,10 +5582,16 @@ local function processSingleWorld()
     local secState = inspectWorldSecurityState(doorX, doorY)
     local activeDoorID = worldDoor or ""
 
-    if secState.all_ready then
+    local locksAlreadyPlaced = secState.all_ready or (secState.has_wl and secState.has_sl and secState.has_jammer and (secState.has_blocker or secState.has_left_blocker))
+
+    if locksAlreadyPlaced then
         setStatus("Auto-Resume DF", "Lock, Jammer & Door sudah terpasang di " .. worldName .. "! Langsung lanjut DF...")
+        addLog("`2[Auto-Resume DF] `wWorld " .. worldName .. " sudah terpasang lock lengkap! Melanjutkan proses DF tanpa ke Storage Alat...")
         if CFG.use_id_door and activeDoorID == "" then
             activeDoorID = CFG.door_id
+        end
+        if CFG.use_id_door and not secState.has_id_door then
+            activeDoorID = checkAndConfigureDoorID()
         end
     else
         -- Ambil alat yang kurang saja dari Storage Alat, lalu kembali ke world DF
@@ -6428,5 +6542,10 @@ _G.getInvCount = getInvCount
 _G.ITEM = ITEM
 _G.resolveItemName = resolveItemName
 _G.lookupItemIDByName = lookupItemIDByName
+_G.inspectWorldSecurityState = inspectWorldSecurityState
+_G.setupWorldLocks = setupWorldLocks
+_G.isProtectedEnclosure = isProtectedEnclosure
+_G.isInSecurityMoat = isInSecurityMoat
 
 _G.CFG = CFG
+_G.STATE = STATE
