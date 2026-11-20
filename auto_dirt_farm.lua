@@ -383,6 +383,7 @@ local CFG = {
     save_seed_threshold = tonumber(loadPref("save_seed_threshold", 180)) or 180,
 
     -- Security & Door Placement Options (Exact Gambar 2 Layout)
+    ignore_lock         = loadPref("ignore_lock", false),
     use_wl              = loadPref("use_wl", true),
     wl_public           = loadPref("wl_public", true),       -- WL set PUBLIC = ON (1)
     use_sl              = loadPref("use_sl", true),
@@ -818,7 +819,7 @@ local function resolveWorldFilePath(rawFileName, optFolderMode, optCustomDir)
     if fn == "" then fn = "boren_df_worlds.txt" end
     if not fn:lower():match("%.txt$") then fn = fn .. ".txt" end
 
-    -- Jika sudah merupakan full path (/ atau C:\ atau D:\)
+    -- Jika sudah merupakan full path (/ atau path absolut)
     if fn:sub(1, 1) == "/" or fn:match("^%a:[/\\]") then
         local dir = fn:match("^(.*[/\\])") or ""
         local nameOnly = fn:sub(#dir + 1)
@@ -4179,6 +4180,7 @@ end
 
 -- Only require tools that are NOT yet placed in the current world
 local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
+    if CFG.ignore_lock then return true end
     -- Auto-fallback Door ID & Blocker jika belum diset atau jika tas memiliki Wooden Door (12) / alternatif valid
     if CFG.use_id_door and not (existingSec and existingSec.has_id_door) then
         local did = tonumber(CFG.id_door_itemid) or 0
@@ -4908,6 +4910,10 @@ end
 -- Stage A: Setup Locks, Jammer, Door ID & Blocker Doors (Standar Murni Auto Dirt Farm)
 -- VALIDASI: Jika sudah terpasang, otomatis skip pembuatan ulang & langsung lanjut proses DF!
 local function setupWorldLocks(doorX, doorY, existingSec)
+    if CFG.ignore_lock then
+        addLog("`2[Ignore Lock] `wMelewati setup lock/security, langsung mulai proses DF...")
+        return ""
+    end
     local sec = existingSec or inspectWorldSecurityState(doorX, doorY)
     
     local locksAlreadyPlaced = sec.all_ready or (sec.has_wl and sec.has_sl and sec.has_jammer and (sec.has_blocker or sec.has_left_blocker))
@@ -6144,7 +6150,11 @@ local function processSingleWorld()
 
     local locksAlreadyPlaced = secState.all_ready or (secState.has_wl and secState.has_sl and secState.has_jammer and (secState.has_blocker or secState.has_left_blocker))
 
-    if locksAlreadyPlaced then
+    if CFG.ignore_lock then
+        setStatus("Ignore Lock DF", "Ignore Lock AKTIF di " .. worldName .. "! Langsung lanjut DF...")
+        addLog("`2[Ignore Lock] `wWorld " .. worldName .. " mode Ignore Lock aktif (Bukan Owner). Langsung melanjutkan proses DF tanpa lock/storage!")
+        activeDoorID = worldDoor or ""
+    elseif locksAlreadyPlaced then
         setStatus("Auto-Resume DF", "Lock, Jammer & Door sudah terpasang di " .. worldName .. "! Langsung lanjut DF...")
         addLog("`2[Auto-Resume DF] `wWorld " .. worldName .. " sudah terpasang lock lengkap! Melanjutkan proses DF tanpa ke Storage Alat...")
         if CFG.use_id_door and activeDoorID == "" then
@@ -6511,6 +6521,7 @@ local function registerNativeBorenStoreUI()
     local uiLock = createNativeUI("2. Lock & Door", "Lock")
     uiLock:addLabelApp("Lock & Door", "Lock")
     uiLock:addTooltip("Posisi Lock", "WL kanan (Public), SL atas (Private), Jammer kiri-atas, Penghalang kiri, Door ID di (0,0).", "Verified", false)
+    uiLock:addToggle("Ignore Lock (Bukan Owner)", CFG.ignore_lock, "df_ignore_lock", true)
     uiLock:addToggle("World Lock (WL)", CFG.use_wl, "df_use_wl", true)
     uiLock:addToggle("WL Public", CFG.wl_public, "df_wl_public", true)
     uiLock:addDivider()
@@ -6769,6 +6780,9 @@ local function handleUIValue(vtype, name, value)
         CFG.random_length = tonumber(value) or 6
     elseif name == "df_random_num" then
         CFG.random_use_numbers = toBoolVal(value)
+    elseif name == "df_ignore_lock" then
+        CFG.ignore_lock = toBoolVal(value)
+        persistConfig()
     elseif name == "df_use_wl" then
         CFG.use_wl = toBoolVal(value)
     elseif name == "df_wl_public" then
@@ -7140,7 +7154,7 @@ local ALL_UI_ALIASES = {
     "df_btn_add_world", "df_btn_add_cur_world", "df_btn_paste_worlds", "df_btn_copy_all_worlds", "df_btn_clear_worlds", "df_btn_view_worlds",
     "df_world_file", "df_btn_browse_files", "df_file_info_list", "df_btn_save_worlds", "df_btn_load_worlds",
     "df_world_random", "df_random_target", "df_random_len", "df_random_num",
-    "df_use_wl", "df_wl_public",
+    "df_ignore_lock", "df_use_wl", "df_wl_public",
     "df_use_sl", "df_sl_ignore", "df_sl_public",
     "df_use_jammer", "df_use_id_door", "df_pick_id_door", "df_input_id_door", "df_door_id", "df_door_label", "df_delay_tele_door",
     "df_use_blocker", "df_pick_blocker", "df_input_blocker",
