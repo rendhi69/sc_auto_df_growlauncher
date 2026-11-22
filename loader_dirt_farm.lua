@@ -1,13 +1,14 @@
 -- ============================================================================
--- LOADER BOREN STORE - AUTO DIRT FARM (CONSOLE IMGUI)
+-- LOADER BOREN STORE - BOREN STORE - AUTO DIRT FARM PRO (CONSOLE IMGUI)
 -- File: loader_dirt_farm.lua
 -- ============================================================================
--- Memuat antarmuka Console ImGui khusus Auto Dirt Farm.
+-- Memuat antarmuka Console ImGui khusus Dirt Farm.
 -- 100% Berbasis antarmuka Console ImGui Modern (Bukan Menu Native Lama).
 -- Dilengkapi auto-fetch dari GitHub, cache-busting, dan fallback file lokal.
+-- Repo: https://github.com/rendhi69/sc_auto_df_growlauncher.git
 -- ============================================================================
 
-local BASE_URL = "https://raw.githubusercontent.com/rendhi69/sc_auto_plant_growlauncher/main/"
+local BASE_URL = "https://raw.githubusercontent.com/rendhi69/sc_auto_df_growlauncher/main/"
 local BOOT_PATH = "imgui_hub/boot.lua"
 local TARGET_FEATURE = "dirt_farm"
 
@@ -40,8 +41,8 @@ local function notifyUser(msg)
     elseif growtopia and growtopia.notify then pcall(growtopia.notify, tostring(msg)) end
 end
 
-logMsg("`9Menghubungkan ke GitHub dan memuat Console AUTO DIRT FARM...")
-notifyUser("Memuat Console AUTO DIRT FARM...")
+logMsg("`9Menghubungkan ke GitHub dan memuat Console DIRT FARM...")
+notifyUser("Memuat Console DIRT FARM...")
 
 local code = nil
 if fetch then
@@ -71,7 +72,7 @@ if not code or code == "" then
 end
 
 if not code or code == "" then
-    logMsg("`4Gagal memuat Console AUTO DIRT FARM! Periksa koneksi internet / file lokal.")
+    logMsg("`4Gagal memuat Console DIRT FARM! Periksa koneksi internet / file lokal.")
     notifyUser("Gagal memuat Console!")
     return
 end
@@ -92,5 +93,5 @@ if not okRun or type(boot) ~= "table" or type(boot.start) ~= "function" then
 end
 
 boot.start(BASE_URL, TARGET_FEATURE)
-logMsg("`2Console AUTO DIRT FARM Siap Digunakan!")
-notifyUser("Console AUTO DIRT FARM Siap!")
+logMsg("`2Console DIRT FARM Siap Digunakan!")
+notifyUser("Console DIRT FARM Siap!")

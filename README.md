@@ -1,25 +1,28 @@
-# Auto Dirt Farm - Growlauncher
+# BOREN STORE - AUTO DIRT FARM PRO
 
-Skrip otomatisasi pembuatan Dirt Farm (DF) untuk **Growlauncher** dengan antarmuka native UI modern (Boren Store).
+Skrip otomatisasi Auto Dirt Farm Pro untuk Growlauncher dengan dukungan Break 3 Tile, Cave Background, Platform, Auto Restock, dan Console ImGui.
 
-## Fitur Utama
-- **Penataan Lock & Security Moat**: Pemasangan White Door, Small Lock (Private), Jammer, World Lock (Public), Left Blocker (Air Vent), dan Door ID di koordinat `(0,0)` dengan jeda aman & mode Fly.
-- **Pembersihan Pinggir (Clear Sides)**:
-  - Mode **Platform Aktif**: membersihkan 2 kolom pinggir pada sisi yang dipasang platform (`x = 1, 0` dan/atau `x = 98, 99`).
-  - Mode **Platform Nonaktif**: hanya membersihkan 1 kolom pinggir (`x = 0` dan `x = 99`), jalur horizontal DF penuh `x = 1..98`.
-- **Auto Tanam & Panen Dirt Seed**: Tanam secukupnya sesuai setting `Max Tanam`, tunggu pohon matang, panen, dan langsung gunakan untuk menambal DF.
-- **Sistem Auto-Trash Dinamis**: Dialog manajer untuk menambah, mengedit, menghapus, atau mereset daftar item yang di-trash dengan ambang batas (threshold) kuantitas.
-- **Penyimpanan Seed ke Storage**: Otomatis menyimpan bibit (Cave, Lava, Rock Seed) langsung ke storage seed; Dirt Seed dicadangkan di world DF dan disimpan penuh setelah world selesai.
-- **Deteksi Halangan Simetri DF**: Otomatis mendeteksi dan membersihkan blok troll atau blok asing yang merusak simetri garis DF.
+## Repository Khusus
+Repository ini dikhususkan **HANYA** untuk skrip dan loader **Dirt Farm**.
+Tidak ada file dari skrip lain (Plant, Dirt Farm, Soil Builder, Transfer, Harvest) yang tercampur di sini.
 
-## Cara Menggunakan via Loader (Rekomendasi)
-Cukup jalankan file `loader.lua` di Growlauncher:
+## File Utama
+- `auto_dirt_farm.lua`: Skrip mandiri lengkap (Full Engine & UI)
+- `loader.lua`: Loader langsung untuk `auto_dirt_farm.lua` dengan auto-fetch & auto-update dari GitHub
+- `loader_dirt_farm.lua`: Loader Console ImGui khusus fitur Dirt Farm
+- `mod_dirt_farm.lua`: Modul ImGui Console
+- `imgui_hub/`: Direktori bootloader dan dependensi runtime Console ImGui mandiri
 
-```lua
-local RAW_URL = "https://raw.githubusercontent.com/rendhi69/sc_auto_df_growlauncher/main/auto_dirt_farm.lua"
-local content, err = fetch(RAW_URL .. "?v=" .. tostring(os.time()))
-if content and content ~= "" then
-    load(content)()
-end
-```
-Dengan loader ini, Anda tidak perlu lagi mengganti file secara manual di Growlauncher setiap ada pembaruan kode. Cukup perbarui file di GitHub!
+## Cara Menjalankan di Growlauncher
+1. **Menggunakan Loader Otomatis:**
+   Eksekusi kode berikut di executor Growlauncher:
+   ```lua
+   fetch("https://raw.githubusercontent.com/rendhi69/sc_auto_df_growlauncher/main/loader.lua?v=" .. os.time())()
+   ```
+   atau jalankan file `loader.lua` yang tersimpan di perangkat Anda.
+
+2. **Menggunakan Console ImGui:**
+   Jalankan `loader_dirt_farm.lua`.
+
+---
+Dikembangkan oleh **Boren Store** / **rendhi69**.
