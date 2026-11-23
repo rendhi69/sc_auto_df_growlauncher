@@ -1,20 +1,14 @@
 -- ============================================================================
--- LOADER BOREN STORE - BOREN STORE - AUTO DIRT FARM PRO (CONSOLE IMGUI)
+-- LOADER BOREN STORE - AUTO DIRT FARM (NATIVE UI GROWLAUNCHER)
 -- File: loader_dirt_farm.lua
 -- ============================================================================
--- Memuat antarmuka Console ImGui khusus Dirt Farm.
--- 100% Berbasis antarmuka Console ImGui Modern (Bukan Menu Native Lama).
--- Dilengkapi auto-fetch dari GitHub, cache-busting, dan fallback file lokal.
--- Repo: https://github.com/rendhi69/sc_auto_df_growlauncher.git
+-- Skrip ini memuat antarmuka Native Menu bawaan Growlauncher (Auto Dirt Farm).
+-- Mengambil file skrip terbaru langsung dari GitHub (sc_auto_df_growlauncher)
+-- atau fallback ke penyimpanan file lokal perangkat jika offline.
 -- ============================================================================
 
 local BASE_URL = "https://raw.githubusercontent.com/rendhi69/sc_auto_df_growlauncher/main/"
-local BOOT_PATH = "imgui_hub/boot.lua"
-local TARGET_FEATURE = "dirt_farm"
-
--- Set target fitur awal & mode fokus console
-_G.__BOREN_INITIAL_FEATURE = TARGET_FEATURE
-_G.__BOREN_SINGLE_FEATURE = "dirt_farm"
+local TARGET_FILE = "auto_dirt_farm.lua"
 
 local function makeTag()
     if getTime then
@@ -41,12 +35,12 @@ local function notifyUser(msg)
     elseif growtopia and growtopia.notify then pcall(growtopia.notify, tostring(msg)) end
 end
 
-logMsg("`9Menghubungkan ke GitHub dan memuat Console DIRT FARM...")
-notifyUser("Memuat Console DIRT FARM...")
+logMsg("`9Menghubungkan ke GitHub dan memuat Auto Dirt Farm (Native UI)...")
+notifyUser("Memuat Auto Dirt Farm (Native UI)...")
 
 local code = nil
 if fetch then
-    local fetchUrl = BASE_URL .. BOOT_PATH .. "?v=" .. makeTag()
+    local fetchUrl = BASE_URL .. TARGET_FILE .. "?v=" .. makeTag()
     local okF, res = pcall(fetch, fetchUrl)
     if okF and type(res) == "string" and res ~= "" and not res:match("^404") and not res:match("^<!DOCTYPE") then
         code = res
@@ -58,11 +52,13 @@ if not code or code == "" then
         "/storage/emulated/0/Android/media/launcher.powerkuy.growlauncher/ScriptLua/",
         "/storage/emulated/0/Android/data/launcher.powerkuy.growlauncher/files/ScriptLua/",
         "/storage/emulated/0/Download/",
+        "script/script done dont edit/sc dirt farm/",
+        "script/script code/dirt farm/",
         "script/",
         "",
     }
     for _, root in ipairs(localRoots) do
-        local okO, f = pcall(io.open, root .. BOOT_PATH, "r")
+        local okO, f = pcall(io.open, root .. TARGET_FILE, "r")
         if okO and f then
             local txt = f:read("*a")
             f:close()
@@ -72,26 +68,25 @@ if not code or code == "" then
 end
 
 if not code or code == "" then
-    logMsg("`4Gagal memuat Console DIRT FARM! Periksa koneksi internet / file lokal.")
-    notifyUser("Gagal memuat Console!")
+    logMsg("`4Gagal memuat Auto Dirt Farm! Periksa koneksi internet / file lokal.")
+    notifyUser("Gagal memuat Auto Dirt Farm!")
     return
 end
 
 local loaderFn = loadstring or load
 local chunk, err = loaderFn(code)
 if not chunk then
-    logMsg("`4Error kompilasi boot console: " .. tostring(err))
-    notifyUser("Error kompilasi console!")
+    logMsg("`4Error kompilasi script: " .. tostring(err))
+    notifyUser("Error kompilasi Auto Dirt Farm!")
     return
 end
 
-local okRun, boot = pcall(chunk)
-if not okRun or type(boot) ~= "table" or type(boot.start) ~= "function" then
-    logMsg("`4Error inisialisasi boot: " .. tostring(boot))
-    notifyUser("Error inisialisasi console!")
+local okRun, ret = pcall(chunk)
+if not okRun then
+    logMsg("`4Error menjalankan script: " .. tostring(ret))
+    notifyUser("Error eksekusi Auto Dirt Farm!")
     return
 end
 
-boot.start(BASE_URL, TARGET_FEATURE)
-logMsg("`2Console DIRT FARM Siap Digunakan!")
-notifyUser("Console DIRT FARM Siap!")
+logMsg("`2Auto Dirt Farm (Native UI) Berhasil Dimuat ke Growlauncher!")
+notifyUser("Auto Dirt Farm Siap!")
