@@ -148,10 +148,11 @@ local LOCAL_PATHS = {
 -- 1. PRIORITAS UTAMA: ONLINE-FIRST (CDN & GITHUB RAW RESMI)
 -- ============================================================================
 local ONLINE_URLS = {
-    -- 1. jsDelivr CDN (Sangat cepat di Asia Tenggara & bebas blokir ISP Indonesia)
+    -- 1. GitHub Raw Langsung dengan Anti-Cache (Instant bypass semua cache)
+    "https://raw.githubusercontent.com/rendhi69/sc_auto_df_growlauncher/main/auto_dirt_farm.lua?v=" .. makeAntiCacheTag(),
+    "https://raw.githubusercontent.com/rendhi69/sc_auto_df_growlauncher/refs/heads/main/auto_dirt_farm.lua?v=" .. makeAntiCacheTag(),
+    -- 2. jsDelivr CDN
     "https://cdn.jsdelivr.net/gh/rendhi69/sc_auto_df_growlauncher@main/auto_dirt_farm.lua",
-    -- 2. GitHub Raw Canonical (Format resmi dokumentasi Growlauncher)
-    "https://raw.githubusercontent.com/rendhi69/sc_auto_df_growlauncher/refs/heads/main/auto_dirt_farm.lua",
     -- 3. GitHub Raw Standard
     "https://raw.githubusercontent.com/rendhi69/sc_auto_df_growlauncher/main/auto_dirt_farm.lua"
 }
@@ -215,6 +216,7 @@ if content and #content > 500 then
         if okRun then
             logMsg("`2[ONLINE] Auto Dirt Farm In-Game Dialog Berhasil Aktif!")
             notifyUser("`2[ONLINE] Auto Dirt Farm Siap! Ketik /df.")
+            if _G.showDFMainDialog then pcall(_G.showDFMainDialog) end
             return
         else
             logMsg("`4Error runtime GitHub script: " .. tostring(rErr))
@@ -243,6 +245,7 @@ for _, p in ipairs(LOCAL_PATHS) do
                     if okRun then
                         logMsg("`3[LOKAL] Auto Dirt Farm Cadangan Lokal Berhasil Aktif!")
                         notifyUser("`4[LOKAL] File lokal dimuat (Bukan online terbaru)!")
+                        if _G.showDFMainDialog then pcall(_G.showDFMainDialog) end
                         return
                     else
                         logMsg("`4Error runtime lokal: " .. tostring(rErr))
