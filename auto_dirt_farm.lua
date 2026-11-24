@@ -1644,6 +1644,13 @@ local function sendRawAction(tx, ty, value)
     local py = p.posY or (p.pos and p.pos.y) or (ty * 32)
     local state = (px > (tx * 32)) and 48 or 32
 
+    -- STRICT SAFETY GUARD: Anti-Bannable Packet (>5 blocks)
+    local ptx = math.floor((px + 10) / 32)
+    local pty = math.floor((py + 10) / 32)
+    if math.abs(ptx - tx) > 3 or math.abs(pty - ty) > 3 then
+        return false -- Tolak aksi bila bot berjarak lebih dari 3 blok dari target!
+    end
+
     sendPacketRaw(false, {
         type   = 3,
         value  = value,
@@ -1798,6 +1805,12 @@ local function breakTileLayerWithLagGuard(tx, ty, isFgLayer, preferredDirX)
             end
         end
 
+        local curPx, curPy = getPlayerTilePos()
+        if curPx and curPy and (math.abs(curPx - tx) > 3 or math.abs(curPy - ty) > 3) then
+            -- Bot masih di luar jangkauan (terhalang medan padat), jangan kirim pukulan kosong!
+            return false
+        end
+
         local prevProgress = tonumber(t.progress) or 0
         local baseHits = estimateTileBreakHits(curId)
         local burstCount = (round == 1) and baseHits or math.min(3, math.max(1, math.ceil(baseHits / 2)))
@@ -1930,6 +1943,12 @@ local function placeTileAt(tx, ty, itemID, isBackground, preferredDirX)
             moveAdjacentSafe(tx, ty, preferredDirX)
         elseif outOfRange then
             moveAdjacentSafe(tx, ty, preferredDirX)
+        end
+
+        local curPx, curPy = getPlayerTilePos()
+        if curPx and curPy and (math.abs(curPx - tx) > 3 or math.abs(curPy - ty) > 3) then
+            -- Jangan place jika masih jauh dari target
+            return false
         end
 
         sendRawAction(tx, ty, itemID)
@@ -2320,226 +2339,27 @@ local function safeSendRawDialog(dText)
 end
 
 openEditWorldEntryDialog = function(idx)
-    local entry = CFG.world_list[idx]
-    if not entry then return end
-    local dLines = {
-        "set_default_color|`o",
-        "add_quick_exit|",
-        string.format("add_label_with_icon|big|`wEdit World DF #%d``|left|2|", idx),
-        "add_spacer|small|",
-        string.format("add_text_input|edit_w_name|Nama World|%s|24|", tostring(entry.name or "")),
-        string.format("add_text_input|edit_w_door|Door ID (Kosong = White Door)|%s|32|", tostring(entry.door or "")),
-        "add_spacer|small|",
-        "add_button|save_w_edit|`2Simpan Perubahan|noflags|0|0|",
-        "add_button|del_w_edit|`4Hapus World Ini|noflags|0|0|",
-        string.format("end_dialog|boren_world_edit_%d|Batal||", idx),
-    }
-    safeSendRawDialog(table.concat(dLines, "\n"))
+    if _G.showDFWorldListDialog then return _G.showDFWorldListDialog(1) end
 end
 
 openWorldListManagerDialog = function(fmt)
-    fmt = fmt or "colon"
-
-    local copyLines = {}
-    for _, e in ipairs(CFG.world_list) do
-        local door = e.door or ""
-        if fmt == "colon" then
-            table.insert(copyLines, (door ~= "") and (e.name .. ":" .. door) or e.name)
-        elseif fmt == "pipe" then
-            table.insert(copyLines, (door ~= "") and (e.name .. "|" .. door) or e.name)
-        else
-            table.insert(copyLines, e.name)
-        end
-    end
-    local rawCopy = table.concat(copyLines, "\n")
-    local rawBoxText = table.concat(copyLines, ", ")
-    if ImGui and ImGui.SetClipboardText and rawCopy ~= "" then
-        pcall(ImGui.SetClipboardText, rawCopy)
-    end
-
-    local dLines = {
-        "set_default_color|`o",
-        "add_quick_exit|",
-        string.format("add_label_with_icon|big|`wKelola, Salin & Tempel World DF (%d)``|left|2|", #CFG.world_list),
-        "add_textbox|`oDi sini Anda bisa salin antrean, tempel banyak world baru, dan edit/hapus world.|left|",
-        "add_spacer|small|",
-
-        -- Bagian 1: Salin Semua World
-        "add_textbox|`2[1. Salin Semua World DF ke Clipboard]|left|",
-        string.format("add_text_input|boren_wcopy_box|Salin Antrean|%s|9999|", rawBoxText),
-        "add_button|boren_btn_wfmt_colon|Format Titik Dua (:)|noflags|0|0|",
-        "add_button|boren_btn_wfmt_pipe|Format Garis (|)|noflags|0|0|",
-        "add_button|boren_btn_wfmt_name|Hanya Nama World|noflags|0|0|",
-        "add_spacer|small|",
-
-        -- Bagian 2: Tempel Banyak / Tambah World
-        "add_textbox|`2[2. Tempel / Tambah World ke Antrean]|left|",
-        "add_textbox|`eTempel 1 atau banyak world (Format: WORLD:ID / WORLD|ID / WORLD). Bebas koma, spasi, enter.|left|",
-        "add_text_input|boren_wpaste_raw|Tempel World di sini:||9999|",
-        "add_checkbox|boren_wpaste_replace|Ganti semua antrean (Replace)|0|",
-        "add_button|boren_submit_wpaste|`2+ Tempel / Tambah ke Antrean|noflags|0|0|",
-        "add_spacer|small|",
-
-        -- Bagian 3: Daftar World & Aksi Edit/Hapus
-        string.format("add_textbox|`2[3. Daftar Antrean Saat Ini (%d World)]|left|", #CFG.world_list)
-    }
-
-    if #CFG.world_list == 0 then
-        table.insert(dLines, "add_textbox|`4(Antrean World DF masih kosong. Silakan tempel di atas!)|left|")
-    else
-        for i, e in ipairs(CFG.world_list) do
-            local tag = getWorldEntryStatusTag(e)
-            local st = (tag == "DONE") and "`2[DONE]" or ((tag == "PROSES") and "`6[PROSES]" or "`9[ANTRI]")
-            local d = (e.door and e.door ~= "") and e.door or "-"
-            table.insert(dLines, string.format("add_textbox|`w%d. `9%s `o[Door: %s] %s|left|", i, e.name, d, st))
-            table.insert(dLines, string.format("add_button|boren_wedit_%d|Edit|noflags|0|0|", i))
-            table.insert(dLines, string.format("add_button|boren_whapus_%d|Hapus|noflags|0|0|", i))
-            table.insert(dLines, "add_spacer|small|")
-        end
-    end
-
-    table.insert(dLines, "end_dialog|boren_world_mgr|Tutup||")
-    return safeSendRawDialog(table.concat(dLines, "\n"))
+    if _G.showDFWorldsDialog then return _G.showDFWorldsDialog() end
 end
 
 openUnifiedToolManager = function(fmt)
-    fmt = fmt or "colon"
-    local copyLines = {}
-    for _, s in ipairs(CFG.storage_tool_list or {}) do
-        local d = (s.door and s.door ~= "") and s.door or ""
-        if fmt == "colon" then
-            table.insert(copyLines, d ~= "" and (s.name .. ":" .. d) or s.name)
-        elseif fmt == "pipe" then
-            table.insert(copyLines, d ~= "" and (s.name .. "|" .. d) or s.name)
-        else
-            table.insert(copyLines, s.name)
-        end
-    end
-    local rawBoxText = table.concat(copyLines, ", ")
-
-    local d = {
-        "set_default_color|`o",
-        "add_quick_exit|",
-        string.format("add_label_with_icon|big|`2Kelola Gudang Alat (%d)``|left|242|", #(CFG.storage_tool_list or {})),
-        "add_textbox|`oGudang restock World Lock, Small Lock, Jammer, Wooden Door, dan Blocker.|left|",
-        "add_spacer|small|",
-        "add_textbox|`2[1. Salin Daftar Gudang Alat]|left|",
-        string.format("add_text_input|boren_tlcopy_box|Salin Gudang Alat|%s|9999|", rawBoxText),
-        "add_button|boren_btn_tlfmt_colon|Format Titik Dua (:)|noflags|0|0|",
-        "add_button|boren_btn_tlfmt_pipe|Format Garis (|)|noflags|0|0|",
-        "add_button|boren_btn_tlfmt_name|Hanya Nama World|noflags|0|0|",
-        "add_spacer|small|",
-        "add_textbox|`2[2. Tempel / Tambah Gudang Alat]|left|",
-        "add_textbox|`eFormat: WORLD:DOOR atau WORLD|DOOR atau WORLD. Bebas koma/enter.|left|",
-        "add_text_input|boren_tlpaste_raw|Tempel Gudang di sini:||9999|",
-        "add_checkbox|boren_tlpaste_replace|Ganti seluruh daftar (Replace)|0|",
-        "add_button|boren_submit_tlpaste|`2+ Tempel / Tambah ke Gudang Alat|noflags|0|0|",
-        "add_spacer|small|",
-        string.format("add_textbox|`2[3. Daftar Gudang Alat Saat Ini (%d World)]|left|", #(CFG.storage_tool_list or {}))
-    }
-
-    if #(CFG.storage_tool_list or {}) == 0 then
-        table.insert(d, "add_textbox|`4(Gudang Alat masih kosong. Silakan tempel di atas!)|left|")
-    else
-        for i, e in ipairs(CFG.storage_tool_list) do
-            local doorStr = (e.door and e.door ~= "") and e.door or "-"
-            table.insert(d, string.format("add_textbox|`w%d. `9%s `o[Door: %s]|left|", i, e.name, doorStr))
-            table.insert(d, string.format("add_button|boren_tledit_%d|Edit|noflags|0|0|", i))
-            table.insert(d, string.format("add_button|boren_tlhapus_%d|Hapus|noflags|0|0|", i))
-            table.insert(d, "add_spacer|small|")
-        end
-    end
-
-    table.insert(d, "end_dialog|boren_df_tool_mgr|Tutup||")
-    return safeSendRawDialog(table.concat(d, "\n"))
-end
-
-openEditToolEntryDialog = function(idx)
-    local entry = (CFG.storage_tool_list or {})[idx]
-    if not entry then return end
-    local d = {
-        "set_default_color|`o",
-        "add_quick_exit|",
-        string.format("add_label_with_icon|big|`wEdit Gudang Alat #%d: %s``|left|242|", idx, entry.name),
-        "add_spacer|small|",
-        string.format("add_text_input|edit_tl_name|Nama World:|%s|32|", entry.name),
-        string.format("add_text_input|edit_tl_door|Door ID:|%s|32|", entry.door or ""),
-        "add_spacer|small|",
-        "add_button|save_tl_edit|`2Simpan Perubahan|noflags|0|0|",
-        "add_button|del_tl_edit|`4Hapus Gudang Ini|noflags|0|0|",
-        string.format("end_dialog|boren_df_tool_edit_%d|Batal||", idx),
-    }
-    safeSendRawDialog(table.concat(d, "\n"))
+    if _G.showDFToolStorageDialog then return _G.showDFToolStorageDialog() end
 end
 
 openUnifiedSeedManager = function(fmt)
-    fmt = fmt or "colon"
-    local copyLines = {}
-    for _, s in ipairs(CFG.storage_seed_list or {}) do
-        local d = (s.door and s.door ~= "") and s.door or ""
-        if fmt == "colon" then
-            table.insert(copyLines, d ~= "" and (s.name .. ":" .. d) or s.name)
-        elseif fmt == "pipe" then
-            table.insert(copyLines, d ~= "" and (s.name .. "|" .. d) or s.name)
-        else
-            table.insert(copyLines, s.name)
-        end
-    end
-    local rawBoxText = table.concat(copyLines, ", ")
+    if _G.showDFSeedStorageDialog then return _G.showDFSeedStorageDialog() end
+end
 
-    local d = {
-        "set_default_color|`o",
-        "add_quick_exit|",
-        string.format("add_label_with_icon|big|`2Kelola Gudang Seed (%d)``|left|3|", #(CFG.storage_seed_list or {})),
-        "add_textbox|`oGudang simpan Dirt Seed, Cave Seed, Lava Seed, Rock Seed, dsb.|left|",
-        "add_spacer|small|",
-        "add_textbox|`2[1. Salin Daftar Gudang Seed]|left|",
-        string.format("add_text_input|boren_sdcopy_box|Salin Gudang Seed|%s|9999|", rawBoxText),
-        "add_button|boren_btn_sdfmt_colon|Format Titik Dua (:)|noflags|0|0|",
-        "add_button|boren_btn_sdfmt_pipe|Format Garis (|)|noflags|0|0|",
-        "add_button|boren_btn_sdfmt_name|Hanya Nama World|noflags|0|0|",
-        "add_spacer|small|",
-        "add_textbox|`2[2. Tempel / Tambah Gudang Seed]|left|",
-        "add_textbox|`eFormat: WORLD:DOOR atau WORLD|DOOR atau WORLD. Bebas koma/enter.|left|",
-        "add_text_input|boren_sdpaste_raw|Tempel Gudang di sini:||9999|",
-        "add_checkbox|boren_sdpaste_replace|Ganti seluruh daftar (Replace)|0|",
-        "add_button|boren_submit_sdpaste|`2+ Tempel / Tambah ke Gudang Seed|noflags|0|0|",
-        "add_spacer|small|",
-        string.format("add_textbox|`2[3. Daftar Gudang Seed Saat Ini (%d World)]|left|", #(CFG.storage_seed_list or {}))
-    }
-
-    if #(CFG.storage_seed_list or {}) == 0 then
-        table.insert(d, "add_textbox|`4(Gudang Seed masih kosong. Silakan tempel di atas!)|left|")
-    else
-        for i, e in ipairs(CFG.storage_seed_list) do
-            local doorStr = (e.door and e.door ~= "") and e.door or "-"
-            table.insert(d, string.format("add_textbox|`w%d. `9%s `o[Door: %s]|left|", i, e.name, doorStr))
-            table.insert(d, string.format("add_button|boren_sdedit_%d|Edit|noflags|0|0|", i))
-            table.insert(d, string.format("add_button|boren_sdhapus_%d|Hapus|noflags|0|0|", i))
-            table.insert(d, "add_spacer|small|")
-        end
-    end
-
-    table.insert(d, "end_dialog|boren_df_seed_mgr|Tutup||")
-    return safeSendRawDialog(table.concat(d, "\n"))
+openEditToolEntryDialog = function(idx)
+    if _G.showDFToolStorageDialog then return _G.showDFToolStorageDialog() end
 end
 
 openEditSeedEntryDialog = function(idx)
-    local entry = (CFG.storage_seed_list or {})[idx]
-    if not entry then return end
-    local d = {
-        "set_default_color|`o",
-        "add_quick_exit|",
-        string.format("add_label_with_icon|big|`wEdit Gudang Seed #%d: %s``|left|3|", idx, entry.name),
-        "add_spacer|small|",
-        string.format("add_text_input|edit_sd_name|Nama World:|%s|32|", entry.name),
-        string.format("add_text_input|edit_sd_door|Door ID:|%s|32|", entry.door or ""),
-        "add_spacer|small|",
-        "add_button|save_sd_edit|`2Simpan Perubahan|noflags|0|0|",
-        "add_button|del_sd_edit|`4Hapus Gudang Ini|noflags|0|0|",
-        string.format("end_dialog|boren_df_seed_edit_%d|Batal||", idx),
-    }
-    safeSendRawDialog(table.concat(d, "\n"))
+    if _G.showDFSeedStorageDialog then return _G.showDFSeedStorageDialog() end
 end
 
 openEditTrashEntryDialog = function(idx)
@@ -5422,12 +5242,20 @@ local function clearWorldDirtFarm(worldName, activeDoorID, doorX, doorY)
                             local hasBg = CFG.break_cave_bg and (t.bg ~= 0)
                             if hasFg or hasBg then
                                 local prefDir = (colX < 50) and 1 or -1
-                                if breakTileCompletely(colX, y, hasFg, hasBg, prefDir) then
-                                    sideBrokenCount = sideBrokenCount + 1
-                                    if sideDelay > 0 then safeSleep(sideDelay) end
-                                    if sideBrokenCount % 8 == 0 then safeSleep(200) end
+                                local curPx, curPy = getPlayerTilePos()
+                                local distFromCol = (curPx and curPy) and math.max(math.abs(curPx - colX), math.abs(curPy - y)) or 0
+                                local canReach = true
+                                if distFromCol > 3 then
+                                    canReach = moveAdjacentSafe(colX, y, prefDir)
                                 end
-                                checkTrashAndSeeds(worldName, activeDoorID)
+                                if canReach then
+                                    if breakTileCompletely(colX, y, hasFg, hasBg, prefDir) then
+                                        sideBrokenCount = sideBrokenCount + 1
+                                        if sideDelay > 0 then safeSleep(sideDelay) end
+                                        if sideBrokenCount % 8 == 0 then safeSleep(200) end
+                                    end
+                                    checkTrashAndSeeds(worldName, activeDoorID)
+                                end
                             end
                         end
                     end
@@ -6640,8 +6468,8 @@ DLG.showDFAddWorldDialog = function()
         "add_textbox|`p(Format: WORLD atau WORLD:DOOR_ID)|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
-        "add_text_input|df_in_world_name|World Name| |32|",
-        "add_text_input|df_in_door_id|Door ID (Optional)| |16|",
+        "add_text_input|df_in_world_name|World Name||32|",
+        "add_text_input|df_in_door_id|Door ID (Optional)||16|",
         "add_spacer|small|",
         "add_button|df_btn_do_add_world|`wSave World `2(Add)|noflags|0|0|",
         string.format("add_button|df_btn_add_cur_w|`wAdd Current World `2(%s)|noflags|0|0|", curW),
@@ -6695,7 +6523,7 @@ DLG.showDFBatchWorldDialog = function()
         "add_textbox|`p(Contoh: FARM1 FARM2:DOOR1 FARM3 FARM4:DOOR2)|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
-        "add_text_input|df_in_batch_worlds|World List| |80|",
+        "add_text_input|df_in_batch_worlds|World List||80|",
         "add_spacer|small|",
         "add_button|df_btn_do_batch_add|`wAdd All Worlds `2(Batch)|noflags|0|0|",
         "add_button|df_btn_back_worlds|`wBack|noflags|0|0|",
@@ -6732,7 +6560,7 @@ DLG.showDFWorldListDialog = function(page)
             local w = CFG.world_list[i]
             local dStr = (w.door and w.door ~= "") and (":" .. w.door) or ""
             local isAct = (i == STATE.active_world_idx and STATE.running)
-            local st = isAct and "`2(Planting)" or ((w.status == "DONE" or w.done) and "`4(Done)" or "`2(Ready)")
+            local st = isAct and "`2(Clearing)" or ((w.status == "DONE" or w.done) and "`4(Done)" or "`2(Ready)")
             lines[#lines+1] = string.format("add_textbox|`p- `w#%d. `b%s%s %s|left|", i, w.name, dStr, st)
             lines[#lines+1] = string.format("add_button|df_del_w_%d|`4Delete World (#%d)|noflags|0|0|", i, i)
         end
@@ -6790,15 +6618,15 @@ DLG.showDFToolStorageDialog = function()
     local lines = {
         "set_default_color|`o",
         "add_quick_exit|",
-        "add_label_with_icon|big|`wGudang Alat (WL/SL/Jammer/Door)``|left|3802|",
+        "add_label_with_icon|big|`wGudang Alat (WL/SL/Jammer/Door)``|left|242|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
         string.format("add_textbox|`wTotal Registered Vault: `2(%d Storage)|left|", totalT),
         "add_textbox|`wGudang alat untuk restock WL, SL, Signal Jammer, Door|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
-        "add_text_input|df_in_tool_w|World Gudang Alat| |24|",
-        "add_text_input|df_in_tool_d|Door ID (Optional)| |16|",
+        "add_text_input|df_in_tool_w|World Gudang Alat||24|",
+        "add_text_input|df_in_tool_d|Door ID (Optional)||16|",
         "add_spacer|small|",
         "add_button|df_btn_do_add_tool|`wSave Gudang Alat `2(Add)|noflags|0|0|",
         string.format("add_button|df_btn_open_tool_list|`wList Gudang Alat `2(%d Storage)|noflags|0|0|", totalT),
@@ -6821,7 +6649,7 @@ DLG.showDFToolStorageListDialog = function(page)
     local lines = {
         "set_default_color|`o",
         "add_quick_exit|",
-        "add_label_with_icon|big|`wList Gudang Alat``|left|3802|",
+        "add_label_with_icon|big|`wList Gudang Alat``|left|242|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
         string.format("add_textbox|`wTotal Registered: `2(%d Storage) `p- `wPage `2(%d/%d)|left|", totalT, page, totalPages),
@@ -6863,15 +6691,15 @@ DLG.showDFSeedStorageDialog = function()
     local lines = {
         "set_default_color|`o",
         "add_quick_exit|",
-        "add_label_with_icon|big|`wGudang Seed (Dirt/Cave/Rock/Lava)``|left|3802|",
+        "add_label_with_icon|big|`wGudang Seed (Dirt/Cave/Rock/Lava)``|left|828|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
         string.format("add_textbox|`wTotal Registered Vault: `2(%d Storage)|left|", totalS),
         "add_textbox|`wGudang seed untuk menyimpan hasil drop seed dari bot|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
-        "add_text_input|df_in_seed_w|World Gudang Seed| |24|",
-        "add_text_input|df_in_seed_d|Door ID (Optional)| |16|",
+        "add_text_input|df_in_seed_w|World Gudang Seed||24|",
+        "add_text_input|df_in_seed_d|Door ID (Optional)||16|",
         "add_spacer|small|",
         "add_button|df_btn_do_add_seed|`wSave Gudang Seed `2(Add)|noflags|0|0|",
         string.format("add_button|df_btn_open_seed_list|`wList Gudang Seed `2(%d Storage)|noflags|0|0|", totalS),
@@ -6894,7 +6722,7 @@ DLG.showDFSeedStorageListDialog = function(page)
     local lines = {
         "set_default_color|`o",
         "add_quick_exit|",
-        "add_label_with_icon|big|`wList Gudang Seed``|left|3802|",
+        "add_label_with_icon|big|`wList Gudang Seed``|left|828|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
         string.format("add_textbox|`wTotal Registered: `2(%d Storage) `p- `wPage `2(%d/%d)|left|", totalS, page, totalPages),
@@ -7712,10 +7540,24 @@ local function handleDFDialogReturn(pkt)
 end
 
 -- Ekspor fungsi dialog ke _G agar loader & command handler selalu dapat memanggilnya
-_G.showDFMainDialog = function() if DLG.showDFMainDialog then DLG.showDFMainDialog() end end
-_G.showDFWorldsDialog = function() if DLG.showDFWorldsDialog then DLG.showDFWorldsDialog() end end
-_G.showDFStorageDialog = function() if DLG.showDFStorageDialog then DLG.showDFStorageDialog() end end
-_G.showDFLockDialog = function() if DLG.showDFLockDialog then DLG.showDFLockDialog() end end
+-- Ekspor fungsi dialog DF ke _G untuk akses global cepat
+_G.showDFMainDialog = DLG.showDFMainDialog
+_G.showDFWorldsDialog = DLG.showDFWorldsDialog
+_G.showDFAddWorldDialog = DLG.showDFAddWorldDialog
+_G.showDFFindWorldDialog = DLG.showDFFindWorldDialog
+_G.showDFBatchWorldDialog = DLG.showDFBatchWorldDialog
+_G.showDFWorldListDialog = DLG.showDFWorldListDialog
+_G.showDFStorageDialog = DLG.showDFStorageDialog
+_G.showDFToolStorageDialog = DLG.showDFToolStorageDialog
+_G.showDFToolStorageListDialog = DLG.showDFToolStorageListDialog
+_G.showDFSeedStorageDialog = DLG.showDFSeedStorageDialog
+_G.showDFSeedStorageListDialog = DLG.showDFSeedStorageListDialog
+_G.showDFStorageThreshDialog = DLG.showDFStorageThreshDialog
+_G.showDFLockDialog = DLG.showDFLockDialog
+_G.showDFWLConfigDialog = DLG.showDFWLConfigDialog
+_G.showDFSLConfigDialog = DLG.showDFSLConfigDialog
+_G.showDFDoorConfigDialog = DLG.showDFDoorConfigDialog
+_G.showDFMiscLockDialog = DLG.showDFMiscLockDialog
 _G.handleDFDialogReturn = handleDFDialogReturn
 
 -- Alihkan seluruh pemanggilan dialog legacy ke sistem compact dialog resmi
@@ -8073,10 +7915,14 @@ local function handleUIValue(vtype, name, value)
         persistConfig()
         updateWorldDisplayList()
         if sendNotification then pcall(sendNotification, "List world dikosongkan!") end
-    elseif name == "df_btn_view_worlds" or name == "df_btn_paste_worlds" or name == "df_btn_copy_all_worlds" then
+    elseif name == "df_btn_view_worlds" or name == "df_btn_copy_all_worlds" then
         ensureRuntimeHooks()
         updateWorldDisplayList()
-        openWorldListManagerDialog()
+        if _G.showDFWorldsDialog then _G.showDFWorldsDialog() else openWorldListManagerDialog() end
+    elseif name == "df_btn_paste_worlds" then
+        ensureRuntimeHooks()
+        updateWorldDisplayList()
+        if _G.showDFBatchWorldDialog then _G.showDFBatchWorldDialog() else openWorldListManagerDialog() end
     elseif name == "df_world_file" then
         local f = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
         if f ~= "" then
@@ -8213,7 +8059,7 @@ local function handleUIValue(vtype, name, value)
             if sendNotification then pcall(sendNotification, "Isi Nama World Storage Alat terlebih dulu!") end
         end
     elseif name == "df_btn_manage_tools" or name == "df_tool_storage_list" then
-        openUnifiedToolManager()
+        if _G.showDFToolStorageDialog then _G.showDFToolStorageDialog() else openUnifiedToolManager() end
     elseif name == "df_btn_clear_tool_direct" then
         CFG.storage_tool_list = {}
         CFG.storage_pack_world = ""
@@ -8256,7 +8102,7 @@ local function handleUIValue(vtype, name, value)
             if sendNotification then pcall(sendNotification, "Isi Nama World Storage Seed terlebih dulu!") end
         end
     elseif name == "df_btn_manage_seeds" or name == "df_seed_storage_list" then
-        openUnifiedSeedManager()
+        if _G.showDFSeedStorageDialog then _G.showDFSeedStorageDialog() else openUnifiedSeedManager() end
     elseif name == "df_btn_clear_seed_direct" then
         CFG.storage_seed_list = {}
         CFG.storage_seed_world = ""
