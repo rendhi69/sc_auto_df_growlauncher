@@ -4,7 +4,7 @@
 -- Terintegrasi Penuh ke Menu Native Growlauncher (Kategori: "Boren Store")
 -- ============================================================================
 
--- 1. SAFE PREFERENCES & JSON INITIALIZATION
+-- 1. SAFE PREFERENCES, LOCAL FILE PERSISTENCE & JSON INITIALIZATION
 local ok_pref, PreferencesMod = pcall(require, "Preferences")
 if not (ok_pref and PreferencesMod) then
     ok_pref, PreferencesMod = pcall(require, "preferences")
@@ -27,68 +27,201 @@ if ok_pref and PreferencesMod and PreferencesMod.new then
     end
 end
 
+-- DUAL-LAYER PERSISTENCE: Memori Cache + File Lokal (boren_df_config.txt)
+local localConfigStore = {}
+
+local function getConfigFilePaths()
+    local paths = {}
+    -- 1. Folder Download Android (Paten untuk GrowLauncher di Android HP)
+    table.insert(paths, "/storage/emulated/0/Download/boren_df_config.txt")
+    -- 2. Folder Script GrowLauncher di Android
+    table.insert(paths, "/storage/emulated/0/Android/media/launcher.powerkuy.growlauncher/ScriptLua/boren_df_config.txt")
+    table.insert(paths, "/storage/emulated/0/Android/data/launcher.powerkuy.growlauncher/files/ScriptLua/boren_df_config.txt")
+    -- 3. Folder Downloads di Windows PC
+    if os and os.getenv then
+        local userProfile = os.getenv("USERPROFILE")
+        if userProfile and userProfile ~= "" then
+            local winDl = userProfile:gsub("\\", "/") .. "/Downloads/boren_df_config.txt"
+            table.insert(paths, winDl)
+        end
+    end
+    -- 4. Path Relatif direktori aktif
+    table.insert(paths, "boren_df_config.txt")
+    return paths
+end
+
+local function readRawConfigFile(fpath)
+    if not io or not io.open then return nil end
+    local ok, fh = pcall(io.open, fpath, "r")
+    if ok and fh then
+        local okR, content = pcall(function()
+            local str = fh:read("*a")
+            fh:close()
+            return str
+        end)
+        if okR and type(content) == "string" then
+            return content
+        end
+    end
+    return nil
+end
+
+local function writeRawConfigFile(fpath, content)
+    if not io or not io.open then return false end
+    local ok, fh = pcall(io.open, fpath, "w")
+    if ok and fh then
+        local okW = pcall(function()
+            fh:write(content)
+            fh:close()
+        end)
+        return okW
+    end
+    return false
+end
+
+local function loadLocalStoreFromDisk()
+    local paths = getConfigFilePaths()
+    for _, p in ipairs(paths) do
+        local raw = readRawConfigFile(p)
+        if raw and raw ~= "" then
+            for line in raw:gmatch("[^\r\n]+") do
+                local k, v = line:match("^([^=]+)=(.*)$")
+                if k then
+                    k = k:gsub("^%s+", ""):gsub("%s+$", "")
+                    v = v:gsub("^%s+", ""):gsub("%s+$", "")
+                    localConfigStore[k] = v
+                end
+            end
+            break
+        end
+    end
+end
+
+-- Muat data disk saat script di-load pertama kali
+loadLocalStoreFromDisk()
+
+local function saveLocalStoreToDisk()
+    local lines = {}
+    for k, v in pairs(localConfigStore) do
+        table.insert(lines, tostring(k) .. "=" .. tostring(v))
+    end
+    table.sort(lines)
+    local outStr = table.concat(lines, "\n") .. "\n"
+
+    local paths = getConfigFilePaths()
+    for _, p in ipairs(paths) do
+        pcall(writeRawConfigFile, p, outStr)
+    end
+    if writeToLocal then
+        pcall(writeToLocal, "boren_df_config.txt", outStr)
+    end
+end
+
 local function loadPref(key, default)
+    -- 1. Cek PreferencesMod jika ada
     if saved and saved.get then
         local ok, val = pcall(function() return saved:get(key, default) end)
         if ok and val ~= nil then
             return val
         end
     end
+    -- 2. Cek localConfigStore dari file lokal
+    if localConfigStore[key] ~= nil then
+        local val = localConfigStore[key]
+        if type(default) == "number" then
+            return tonumber(val) or default
+        elseif type(default) == "boolean" then
+            return (val == "true" or val == "1")
+        else
+            return tostring(val)
+        end
+    end
     return default
 end
 
 local function setPref(key, val)
-    if not saved or not saved.set then return end
-    pcall(function()
-        saved:set(key, val)
-        if saved.save then saved:save() end
-    end)
+    if saved and saved.set then
+        pcall(function()
+            saved:set(key, val)
+            if saved.save then saved:save() end
+        end)
+    end
+    localConfigStore[key] = tostring(val)
+    saveLocalStoreToDisk()
 end
 
 local function savePrefs(cfg_table)
-    if not saved or not saved.set or not saved.save then return end
-    pcall(function()
-        for k, v in pairs(cfg_table) do
-            local vt = type(v)
-            if vt == "string" or vt == "number" or vt == "boolean" then
-                saved:set(k, v)
-            end
-        end
-        -- Simpan daftar world sebagai string sederhana agar aman di Preferences Android
-        local wParts = {}
-        if type(cfg_table.world_list) == "table" then
-            for _, entry in ipairs(cfg_table.world_list) do
-                if type(entry) == "table" and entry.name and entry.name ~= "" then
-                    local flag = entry.done and "1" or "0"
-                    table.insert(wParts, tostring(entry.name) .. "|" .. tostring(entry.door or "") .. "|" .. flag)
-                end
-            end
-        end
-        saved:set("world_list_str", table.concat(wParts, ";"))
+    if type(cfg_table) ~= "table" then return end
 
-        -- Simpan daftar storage tool
-        local tParts = {}
-        if type(cfg_table.storage_tool_list) == "table" then
-            for _, entry in ipairs(cfg_table.storage_tool_list) do
-                if type(entry) == "table" and entry.name and entry.name ~= "" then
-                    table.insert(tParts, tostring(entry.name) .. "|" .. tostring(entry.door or ""))
-                end
+    -- Simpan nilai scalar
+    for k, v in pairs(cfg_table) do
+        local vt = type(v)
+        if vt == "string" or vt == "number" or vt == "boolean" then
+            localConfigStore[k] = tostring(v)
+            if saved and saved.set then
+                pcall(saved.set, saved, k, v)
             end
         end
-        saved:set("storage_tool_list_str", table.concat(tParts, ";"))
+    end
 
-        -- Simpan daftar storage seed
-        local sParts = {}
-        if type(cfg_table.storage_seed_list) == "table" then
-            for _, entry in ipairs(cfg_table.storage_seed_list) do
-                if type(entry) == "table" and entry.name and entry.name ~= "" then
-                    table.insert(sParts, tostring(entry.name) .. "|" .. tostring(entry.door or ""))
-                end
+    -- Simpan daftar world sebagai string sederhana agar aman di Android & disk lokal
+    local wParts = {}
+    if type(cfg_table.world_list) == "table" then
+        for _, entry in ipairs(cfg_table.world_list) do
+            if type(entry) == "table" and entry.name and entry.name ~= "" then
+                local flag = entry.done and "1" or "0"
+                table.insert(wParts, tostring(entry.name) .. "|" .. tostring(entry.door or "") .. "|" .. flag)
             end
         end
-        saved:set("storage_seed_list_str", table.concat(sParts, ";"))
-        saved:save()
-    end)
+    end
+    local wStr = table.concat(wParts, ";")
+    localConfigStore["world_list_str"] = wStr
+    if saved and saved.set then pcall(saved.set, saved, "world_list_str", wStr) end
+
+    -- Simpan daftar storage tool
+    local tParts = {}
+    if type(cfg_table.storage_tool_list) == "table" then
+        for _, entry in ipairs(cfg_table.storage_tool_list) do
+            if type(entry) == "table" and entry.name and entry.name ~= "" then
+                table.insert(tParts, tostring(entry.name) .. "|" .. tostring(entry.door or ""))
+            end
+        end
+    end
+    local tStr = table.concat(tParts, ";")
+    localConfigStore["storage_tool_list_str"] = tStr
+    if saved and saved.set then pcall(saved.set, saved, "storage_tool_list_str", tStr) end
+
+    -- Simpan daftar storage seed
+    local sParts = {}
+    if type(cfg_table.storage_seed_list) == "table" then
+        for _, entry in ipairs(cfg_table.storage_seed_list) do
+            if type(entry) == "table" and entry.name and entry.name ~= "" then
+                table.insert(sParts, tostring(entry.name) .. "|" .. tostring(entry.door or ""))
+            end
+        end
+    end
+    local sStr = table.concat(sParts, ";")
+    localConfigStore["storage_seed_list_str"] = sStr
+    if saved and saved.set then pcall(saved.set, saved, "storage_seed_list_str", sStr) end
+
+    -- Pastikan field world storage tunggal juga ikut tersimpan
+    if cfg_table.storage_pack_world ~= nil then
+        localConfigStore["storage_pack_world"] = tostring(cfg_table.storage_pack_world)
+    end
+    if cfg_table.storage_pack_door ~= nil then
+        localConfigStore["storage_pack_door"] = tostring(cfg_table.storage_pack_door)
+    end
+    if cfg_table.storage_seed_world ~= nil then
+        localConfigStore["storage_seed_world"] = tostring(cfg_table.storage_seed_world)
+    end
+    if cfg_table.storage_seed_door ~= nil then
+        localConfigStore["storage_seed_door"] = tostring(cfg_table.storage_seed_door)
+    end
+
+    if saved and saved.save then pcall(saved.save, saved) end
+
+    -- Tulis ke file disk
+    saveLocalStoreToDisk()
 end
 
 -- Pure Lua JSON string escaper & encoder (fallback if json module is unavailable)
@@ -974,19 +1107,27 @@ local function saveWorldListToStorage(showDialogPopup)
     recordFileInHistory(fName)
 
     local savedFile = false
-    if io and io.open then
-        local okF, fh = pcall(io.open, fullPath, "w")
-        if okF and fh then
-            pcall(function()
-                fh:write(exportTxt .. (exportTxt ~= "" and "\n" or ""))
-                fh:close()
-            end)
-            savedFile = true
+    local candidateSavePaths = {
+        fullPath,
+        fName,
+        "/storage/emulated/0/Download/" .. fName,
+        "/storage/emulated/0/Android/media/launcher.powerkuy.growlauncher/ScriptLua/" .. fName,
+        "/storage/emulated/0/Android/data/launcher.powerkuy.growlauncher/files/ScriptLua/" .. fName,
+    }
+    for _, sp in ipairs(candidateSavePaths) do
+        if io and io.open then
+            local okF, fh = pcall(io.open, sp, "w")
+            if okF and fh then
+                pcall(function()
+                    fh:write(exportTxt .. (exportTxt ~= "" and "\n" or ""))
+                    fh:close()
+                end)
+                savedFile = true
+            end
         end
-    end
-    if writeToLocal then
-        pcall(writeToLocal, fullPath, exportTxt)
-        pcall(writeToLocal, fName, exportTxt)
+        if writeToLocal then
+            pcall(writeToLocal, sp, exportTxt)
+        end
     end
 
     local summary = string.format("Tersimpan %d world ke %s & Preferences.", #CFG.world_list, savedFile and fullPath or fName)
@@ -1010,29 +1151,28 @@ local function loadWorldListFromStorage(replaceExisting)
 
     local rawData = ""
     local sourceLabel = "Preferences"
-    if io and io.open then
-        local okF, fh = pcall(io.open, fullPath, "r")
-        if okF and fh then
-            local okR, content = pcall(function()
-                local txt = fh:read("*a")
-                fh:close()
-                return txt
-            end)
-            if okR and type(content) == "string" and content:gsub("%s+", "") ~= "" then
-                rawData = content
-                sourceLabel = fullPath
+    local candidateLoadPaths = {
+        fullPath,
+        fName,
+        "/storage/emulated/0/Download/" .. fName,
+        "/storage/emulated/0/Android/media/launcher.powerkuy.growlauncher/ScriptLua/" .. fName,
+        "/storage/emulated/0/Android/data/launcher.powerkuy.growlauncher/files/ScriptLua/" .. fName,
+    }
+    for _, lp in ipairs(candidateLoadPaths) do
+        if io and io.open then
+            local okF, fh = pcall(io.open, lp, "r")
+            if okF and fh then
+                local okR, content = pcall(function()
+                    local txt = fh:read("*a")
+                    fh:close()
+                    return txt
+                end)
+                if okR and type(content) == "string" and content:gsub("%s+", "") ~= "" then
+                    rawData = content
+                    sourceLabel = lp
+                    break
+                end
             end
-        end
-    end
-
-    if rawData == "" and io and io.open and dir ~= "" then
-        local okFb, fhFb = pcall(io.open, fName, "r")
-        if okFb and fhFb then
-            pcall(function()
-                rawData = fhFb:read("*a")
-                fhFb:close()
-            end)
-            if rawData ~= "" then sourceLabel = fName end
         end
     end
 
@@ -4160,11 +4300,11 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
 
     if #storList == 0 then
         local hint = doorHintBefore and " Atau silakan pilih Door ID / Door Penghalang lain di menu Lock & Door." or ""
-        notifyToolRequest(
-            "Request Alat Kurang",
-            "Request: Kurang " .. missingStr .. "! Siapkan di tas atau isi World Storage Alat." .. hint
-        )
-        return false
+        addLog("[Info Alat] Storage Alat belum diatur & alat kurang: " .. missingStr .. ". Melanjutkan proses pembuatan DF dengan alat yang ada...")
+        if sendNotification then
+            pcall(sendNotification, "Storage Alat belum diatur (" .. missingStr .. "), lanjut DF...")
+        end
+        return true
     end
 
     -- Matikan Auto Collect & nyalakan Anti Collect SEBELUM warp ke Storage Alat agar warpTo() tidak menyalakan Auto Collect di dalam Storage!
@@ -4346,7 +4486,11 @@ local function ensureToolsFromStorage(existingSec, returnWorld, returnDoor)
             "Request Stok Alat",
             "Request: Kurang " .. afterStr .. " di Storage Alat!" .. hint
         )
-        return false
+        if returnWorld and returnWorld ~= "" then
+            warpTo(returnWorld, returnDoor or "")
+            safeSleep(1000)
+        end
+        return true
     end
 
     if returnWorld and returnWorld ~= "" then
@@ -6100,6 +6244,13 @@ local function processSingleWorld()
         return false
     end
 
+    -- Pastikan bot benar-benar berada di worldName
+    if getWorldNameSafe() ~= worldName then
+        warpTo(worldName, worldDoor or "")
+        waitForWorldTiles(4000)
+        safeSleep(800)
+    end
+
     STATE.current_world = worldName
     STATE.active_world = worldName
     STATE.active_door = worldDoor or ""
@@ -6112,6 +6263,11 @@ local function processSingleWorld()
     local doorX, doorY = findMainDoor()
     if not doorX or not doorY then
         -- Coba tunggu tile jika baru masuk world
+        waitForWorldTiles(4000)
+        doorX, doorY = findMainDoor()
+    end
+    if not doorX or not doorY then
+        warpTo(worldName, worldDoor or "")
         waitForWorldTiles(4000)
         doorX, doorY = findMainDoor()
     end
@@ -6723,8 +6879,8 @@ DLG.showDFToolStorageDialog = function()
         "add_textbox|`wGudang alat untuk restock WL, SL, Signal Jammer, Door|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
-        "add_text_input|df_in_tool_w|World Gudang Alat||24|",
-        "add_text_input|df_in_tool_d|Door ID (Opsional)||16|",
+        string.format("add_text_input|df_in_tool_w|World Gudang Alat|%s|24|", CFG.storage_pack_world or ""),
+        string.format("add_text_input|df_in_tool_d|Door ID (Opsional)|%s|16|", CFG.storage_pack_door or ""),
         "add_spacer|small|",
         "add_button|df_btn_do_add_tool|`wSave Gudang Alat `2(Add)|noflags|0|0|",
         string.format("add_button|df_btn_open_tool_list|`wList Gudang Alat `2(%d Storage)|noflags|0|0|", totalT),
@@ -6796,8 +6952,8 @@ DLG.showDFSeedStorageDialog = function()
         "add_textbox|`wGudang seed untuk menyimpan hasil drop seed dari bot|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
-        "add_text_input|df_in_seed_w|World Gudang Seed||24|",
-        "add_text_input|df_in_seed_d|Door ID (Opsional)||16|",
+        string.format("add_text_input|df_in_seed_w|World Gudang Seed|%s|24|", CFG.storage_seed_world or ""),
+        string.format("add_text_input|df_in_seed_d|Door ID (Opsional)|%s|16|", CFG.storage_seed_door or ""),
         "add_spacer|small|",
         "add_button|df_btn_do_add_seed|`wSave Gudang Seed `2(Add)|noflags|0|0|",
         string.format("add_button|df_btn_open_seed_list|`wList Gudang Seed `2(%d Storage)|noflags|0|0|", totalS),
@@ -7368,6 +7524,8 @@ local function handleDFDialogReturn(pkt)
             end
             if wName and wName ~= "" then
                 table.insert(CFG.storage_tool_list, { name = wName, door = wDoor or "" })
+                CFG.storage_pack_world = wName
+                CFG.storage_pack_door = wDoor or ""
                 persistConfig()
                 if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
                 if sendNotification then pcall(sendNotification, "Gudang Alat " .. wName .. " ditambahkan!") end
@@ -7379,6 +7537,8 @@ local function handleDFDialogReturn(pkt)
             return true
         elseif btn == "df_btn_clear_all_tool" or pkt:find("buttonClicked|df_btn_clear_all_tool", 1, true) then
             CFG.storage_tool_list = {}
+            CFG.storage_pack_world = ""
+            CFG.storage_pack_door = ""
             persistConfig()
             if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
             if sendNotification then pcall(sendNotification, "Daftar Gudang Alat dikosongkan!") end
@@ -7397,6 +7557,13 @@ local function handleDFDialogReturn(pkt)
             local idx = tonumber(delIdx)
             if idx and CFG.storage_tool_list and CFG.storage_tool_list[idx] then
                 local rem = table.remove(CFG.storage_tool_list, idx)
+                if #CFG.storage_tool_list > 0 then
+                    CFG.storage_pack_world = CFG.storage_tool_list[1].name
+                    CFG.storage_pack_door = CFG.storage_tool_list[1].door or ""
+                else
+                    CFG.storage_pack_world = ""
+                    CFG.storage_pack_door = ""
+                end
                 persistConfig()
                 if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
                 if sendNotification then pcall(sendNotification, "Gudang " .. tostring(rem.name) .. " dihapus!") end
@@ -7426,6 +7593,8 @@ local function handleDFDialogReturn(pkt)
             end
             if wName and wName ~= "" then
                 table.insert(CFG.storage_seed_list, { name = wName, door = wDoor or "" })
+                CFG.storage_seed_world = wName
+                CFG.storage_seed_door = wDoor or ""
                 persistConfig()
                 if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
                 if sendNotification then pcall(sendNotification, "Gudang Seed " .. wName .. " ditambahkan!") end
@@ -7437,6 +7606,8 @@ local function handleDFDialogReturn(pkt)
             return true
         elseif btn == "df_btn_clear_all_seed" or pkt:find("buttonClicked|df_btn_clear_all_seed", 1, true) then
             CFG.storage_seed_list = {}
+            CFG.storage_seed_world = ""
+            CFG.storage_seed_door = ""
             persistConfig()
             if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
             if sendNotification then pcall(sendNotification, "Daftar Gudang Seed dikosongkan!") end
@@ -7455,6 +7626,13 @@ local function handleDFDialogReturn(pkt)
             local idx = tonumber(delIdx)
             if idx and CFG.storage_seed_list and CFG.storage_seed_list[idx] then
                 local rem = table.remove(CFG.storage_seed_list, idx)
+                if #CFG.storage_seed_list > 0 then
+                    CFG.storage_seed_world = CFG.storage_seed_list[1].name
+                    CFG.storage_seed_door = CFG.storage_seed_list[1].door or ""
+                else
+                    CFG.storage_seed_world = ""
+                    CFG.storage_seed_door = ""
+                end
                 persistConfig()
                 if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
                 if sendNotification then pcall(sendNotification, "Gudang " .. tostring(rem.name) .. " dihapus!") end
