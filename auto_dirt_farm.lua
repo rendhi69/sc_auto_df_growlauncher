@@ -6521,7 +6521,7 @@ end
 
 do -- SC DIRT FARM COMPACT DIALOG BLOCK (scoped to avoid 200-local limit)
 -- ============================================================================
--- SC DIRT FARM - MODULAR COMPACT DIALOG SYSTEM (Chat Command: /df /dirtfarm /farm)
+-- SC DIRT FARM - REFINED MODULAR COMPACT DIALOG SYSTEM (/df /dirtfarm /farm)
 -- 100% Pure ASCII, 5-8 lines max per dialog, no vertical scrollbar
 -- ============================================================================
 
@@ -6547,7 +6547,9 @@ local function showClientDialog(dText)
 end
 
 local DLG = {
-    wlist_page = 1
+    wlist_page = 1,
+    tool_page = 1,
+    seed_page = 1
 }
 
 -- ============================================================================
@@ -6594,7 +6596,7 @@ DLG.showDFMainDialog = function()
 end
 
 -- ============================================================================
--- 1. SETTING WORLD FARM (HUB + SUB-DIALOGS)
+-- 1. SETTING WORLD FARM (HUB + 4 DEDICATED COMPACT SUB-DIALOGS)
 -- ============================================================================
 DLG.showDFWorldsDialog = function()
     local wCount = #(CFG.world_list or {})
@@ -6612,10 +6614,10 @@ DLG.showDFWorldsDialog = function()
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
         string.format("add_button|df_btn_toggle_mode|`wMode: %s `2(Switch)|noflags|0|0|", modeTxt),
-        "add_button|df_btn_open_add_w|`wAdd World Farm `2(Manual)|noflags|0|0|",
-        string.format("add_button|df_btn_open_find_w|`wFind World (Random) `2(%d Huruf)|noflags|0|0|", rLen),
-        "add_button|df_btn_open_batch_w|`wBatch Add Worlds `2(Paste)|noflags|0|0|",
-        string.format("add_button|df_btn_open_list_w|`wList World Farm `2(%d World)|noflags|0|0|", wCount),
+        "add_button|df_btn_open_add_w|`w1. Add World Farm `2(Manual)|noflags|0|0|",
+        string.format("add_button|df_btn_open_find_w|`w2. Find Random World `2(%d Huruf)|noflags|0|0|", rLen),
+        "add_button|df_btn_open_batch_w|`w3. Batch Add World `2(Paste)|noflags|0|0|",
+        string.format("add_button|df_btn_open_list_w|`w4. List World Farm `2(%d World)|noflags|0|0|", wCount),
         "add_button|df_btn_dlg_reset_queue|`wReset Status Queue `4(Reset)|noflags|0|0|",
         "add_spacer|small|",
         "add_button|df_btn_dlg_back_main|`wBack|noflags|0|0|",
@@ -6624,6 +6626,7 @@ DLG.showDFWorldsDialog = function()
     showClientDialog(table.concat(lines, "\n"))
 end
 
+-- 1.1 Add World Farm (Compact)
 DLG.showDFAddWorldDialog = function()
     local curW = getWorldNameSafe()
     if curW == "" then curW = "EXIT" end
@@ -6633,11 +6636,11 @@ DLG.showDFAddWorldDialog = function()
         "add_label_with_icon|big|`wAdd World Farm``|left|2|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
-        "add_textbox|`wMasukkan nama world farm: `2(Queue)|left|",
-        "add_textbox|`p(Format: WORLD_NAME atau WORLD_NAME:DOOR_ID)|left|",
+        "add_textbox|`wMasukkan nama world farm ke antrian: `2(Queue)|left|",
+        "add_textbox|`p(Format: WORLD atau WORLD:DOOR_ID)|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
-        "add_text_input|df_in_world_name|World Name| |24|",
+        "add_text_input|df_in_world_name|World Name| |32|",
         "add_text_input|df_in_door_id|Door ID (Optional)| |16|",
         "add_spacer|small|",
         "add_button|df_btn_do_add_world|`wSave World `2(Add)|noflags|0|0|",
@@ -6648,6 +6651,7 @@ DLG.showDFAddWorldDialog = function()
     showClientDialog(table.concat(lines, "\n"))
 end
 
+-- 1.2 Find Random World (Compact, Setting Letter / Huruf Lengkap)
 DLG.showDFFindWorldDialog = function()
     local isRandom = (CFG.world_mode == "random")
     local modeBadge = isRandom and "`2(ON / Active)" or "`4(OFF / Manual)"
@@ -6659,7 +6663,7 @@ DLG.showDFFindWorldDialog = function()
     local lines = {
         "set_default_color|`o",
         "add_quick_exit|",
-        "add_label_with_icon|big|`wFind World (Random Generator)``|left|2|",
+        "add_label_with_icon|big|`wFind Random World``|left|2|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
         string.format("add_textbox|`wMode: %s `p- `wHuruf: `2(%d) `p- `wAngka: %s|left|", modeBadge, rLen, rNumTxt),
@@ -6667,7 +6671,7 @@ DLG.showDFFindWorldDialog = function()
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
         string.format("add_button|df_btn_find_toggle_mode|`wMode Find Random: %s|noflags|0|0|", modeBadge),
-        string.format("add_text_input|df_in_find_len|Jumlah Huruf (4-10)|%d|4|", rLen),
+        string.format("add_text_input|df_in_find_len|Panjang Huruf (4-10)|%d|4|", rLen),
         string.format("add_checkbox|df_chk_find_num|Campur Angka (0-9)|%d|", rNum),
         string.format("add_text_input|df_in_find_target|Target World Selesai|%d|5|", rTar),
         "add_spacer|small|",
@@ -6679,14 +6683,15 @@ DLG.showDFFindWorldDialog = function()
     showClientDialog(table.concat(lines, "\n"))
 end
 
+-- 1.3 Batch Add World (Compact)
 DLG.showDFBatchWorldDialog = function()
     local lines = {
         "set_default_color|`o",
         "add_quick_exit|",
-        "add_label_with_icon|big|`wBatch Add Worlds``|left|2|",
+        "add_label_with_icon|big|`wBatch Add World``|left|2|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
-        "add_textbox|`wMasukkan daftar world farm dipisah spasi atau koma:|left|",
+        "add_textbox|`wMasukkan daftar world farm dipisah spasi atau koma: `2(Batch)|left|",
         "add_textbox|`p(Contoh: FARM1 FARM2:DOOR1 FARM3 FARM4:DOOR2)|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
@@ -6699,6 +6704,7 @@ DLG.showDFBatchWorldDialog = function()
     showClientDialog(table.concat(lines, "\n"))
 end
 
+-- 1.4 List World Farm (Compact, Pagination 5 per Page, No Scrollbar)
 DLG.showDFWorldListDialog = function(page)
     local totalW = #(CFG.world_list or {})
     local perPage = 5
@@ -6712,13 +6718,13 @@ DLG.showDFWorldListDialog = function(page)
         "add_label_with_icon|big|`wList World Farm``|left|2|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
-        string.format("add_textbox|`wTotal Queue: `2(%d World) `p- `wPage `2(%d/%d)|left|", totalW, page, totalPages),
+        string.format("add_textbox|`wTotal Registered: `2(%d World) `p- `wPage `2(%d/%d)|left|", totalW, page, totalPages),
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|"
     }
 
     if totalW == 0 then
-        lines[#lines+1] = "add_textbox|`4(Empty) `wAntrian world farm kosong.|left|"
+        lines[#lines+1] = "add_textbox|`4(Queue is empty) `wBelum ada world farm terdaftar.|left|"
     else
         local startIdx = (page - 1) * perPage + 1
         local endIdx = math.min(totalW, startIdx + perPage - 1)
@@ -6726,9 +6732,9 @@ DLG.showDFWorldListDialog = function(page)
             local w = CFG.world_list[i]
             local dStr = (w.door and w.door ~= "") and (":" .. w.door) or ""
             local isAct = (i == STATE.active_world_idx and STATE.running)
-            local st = isAct and "`2[PROSES]" or ((w.status == "DONE" or w.done) and "`4[DONE]" or "`2[READY]")
-            lines[#lines+1] = string.format("add_textbox|`p#%d `w%s%s %s|left|", i, w.name, dStr, st)
-            lines[#lines+1] = string.format("add_button|df_del_w_%d|`4Hapus (#%d)|noflags|0|0|", i, i)
+            local st = isAct and "`2(Planting)" or ((w.status == "DONE" or w.done) and "`4(Done)" or "`2(Ready)")
+            lines[#lines+1] = string.format("add_textbox|`p- `w#%d. `b%s%s %s|left|", i, w.name, dStr, st)
+            lines[#lines+1] = string.format("add_button|df_del_w_%d|`4Delete World (#%d)|noflags|0|0|", i, i)
         end
     end
 
@@ -6743,7 +6749,7 @@ DLG.showDFWorldListDialog = function(page)
         end
     end
     if totalW > 0 then
-        lines[#lines+1] = "add_button|df_btn_clear_all_w|`wClear All Worlds `4(Reset)|noflags|0|0|"
+        lines[#lines+1] = "add_button|df_btn_clear_all_w|`wClear All Worlds `4(Clear)|noflags|0|0|"
     end
     lines[#lines+1] = "add_button|df_btn_back_worlds|`wBack|noflags|0|0|"
     lines[#lines+1] = "end_dialog|df_w_list|Close||"
@@ -6751,7 +6757,7 @@ DLG.showDFWorldListDialog = function(page)
 end
 
 -- ============================================================================
--- 2. SETTING STORAGE (HUB + SUB-DIALOGS)
+-- 2. SETTING STORAGE (HUB + 3 DEDICATED COMPACT SUB-DIALOGS)
 -- ============================================================================
 DLG.showDFStorageDialog = function()
     local toolCount = #(CFG.storage_tool_list or {})
@@ -6768,9 +6774,9 @@ DLG.showDFStorageDialog = function()
         string.format("add_textbox|`wDrop Threshold: simpan jika seed di tas >= `2(%d)|left|", saveThresh),
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
-        string.format("add_button|df_btn_open_tool_stor|`wGudang Alat (WL/SL/Jam/Door) `2(%d)|noflags|0|0|", toolCount),
-        string.format("add_button|df_btn_open_seed_stor|`wGudang Seed (Dirt/Cave/Rock) `2(%d)|noflags|0|0|", seedCount),
-        string.format("add_button|df_btn_open_thresh_stor|`wPengaturan Drop & Threshold `2(%d)|noflags|0|0|", saveThresh),
+        string.format("add_button|df_btn_open_tool_stor|`w1. Gudang Alat (WL/SL/Jam/Door) `2(%d)|noflags|0|0|", toolCount),
+        string.format("add_button|df_btn_open_seed_stor|`w2. Gudang Seed (Dirt/Cave/Rock) `2(%d)|noflags|0|0|", seedCount),
+        string.format("add_button|df_btn_open_thresh_stor|`w3. Pengaturan Drop & Threshold `2(%d)|noflags|0|0|", saveThresh),
         "add_spacer|small|",
         "add_button|df_btn_dlg_back_main|`wBack|noflags|0|0|",
         "end_dialog|df_storage|Close||"
@@ -6778,6 +6784,7 @@ DLG.showDFStorageDialog = function()
     showClientDialog(table.concat(lines, "\n"))
 end
 
+-- 2.1 Gudang Alat (Compact)
 DLG.showDFToolStorageDialog = function()
     local totalT = #(CFG.storage_tool_list or {})
     local lines = {
@@ -6786,32 +6793,71 @@ DLG.showDFToolStorageDialog = function()
         "add_label_with_icon|big|`wGudang Alat (WL/SL/Jammer/Door)``|left|3802|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
-        string.format("add_textbox|`wTotal Gudang Alat: `2(%d World)|left|", totalT),
+        string.format("add_textbox|`wTotal Registered Vault: `2(%d Storage)|left|", totalT),
+        "add_textbox|`wGudang alat untuk restock WL, SL, Signal Jammer, Door|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
         "add_text_input|df_in_tool_w|World Gudang Alat| |24|",
         "add_text_input|df_in_tool_d|Door ID (Optional)| |16|",
-        "add_button|df_btn_do_add_tool|`wTambah Gudang Alat `2(Add)|noflags|0|0|",
         "add_spacer|small|",
+        "add_button|df_btn_do_add_tool|`wSave Gudang Alat `2(Add)|noflags|0|0|",
+        string.format("add_button|df_btn_open_tool_list|`wList Gudang Alat `2(%d Storage)|noflags|0|0|", totalT),
+        "add_button|df_btn_clear_all_tool|`wKosongkan Gudang Alat `4(Clear)|noflags|0|0|",
+        "add_spacer|small|",
+        "add_button|df_btn_back_storage|`wBack|noflags|0|0|",
+        "end_dialog|df_tool_stor|Cancel||"
     }
-    if totalT == 0 then
-        lines[#lines+1] = "add_textbox|`4(Empty) `wBelum ada gudang alat terdaftar.|left|"
-    else
-        lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
-        for i, t in ipairs(CFG.storage_tool_list) do
-            local dStr = (t.door and t.door ~= "") and (":" .. t.door) or ""
-            lines[#lines+1] = string.format("add_textbox|`p#%d `w%s%s|left|", i, t.name, dStr)
-            lines[#lines+1] = string.format("add_button|df_del_tool_%d|`4Hapus Gudang (#%d)|noflags|0|0|", i, i)
-        end
-        lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
-        lines[#lines+1] = "add_button|df_btn_clear_all_tool|`wKosongkan Gudang Alat `4(Clear)|noflags|0|0|"
-    end
-    lines[#lines+1] = "add_spacer|small|"
-    lines[#lines+1] = "add_button|df_btn_back_storage|`wBack|noflags|0|0|"
-    lines[#lines+1] = "end_dialog|df_tool_stor|Close||"
     showClientDialog(table.concat(lines, "\n"))
 end
 
+-- 2.1.b List Gudang Alat (Compact Pagination)
+DLG.showDFToolStorageListDialog = function(page)
+    local totalT = #(CFG.storage_tool_list or {})
+    local perPage = 5
+    local totalPages = math.max(1, math.ceil(totalT / perPage))
+    page = math.max(1, math.min(totalPages, tonumber(page) or DLG.tool_page or 1))
+    DLG.tool_page = page
+
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wList Gudang Alat``|left|3802|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wTotal Registered: `2(%d Storage) `p- `wPage `2(%d/%d)|left|", totalT, page, totalPages),
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|"
+    }
+
+    if totalT == 0 then
+        lines[#lines+1] = "add_textbox|`4(Storage is empty) `wBelum ada gudang alat terdaftar.|left|"
+    else
+        local startIdx = (page - 1) * perPage + 1
+        local endIdx = math.min(totalT, startIdx + perPage - 1)
+        for i = startIdx, endIdx do
+            local t = CFG.storage_tool_list[i]
+            local dStr = (t.door and t.door ~= "") and (":" .. t.door) or ""
+            lines[#lines+1] = string.format("add_textbox|`p- `w#%d. `b%s%s `2(Tool Vault)|left|", i, t.name, dStr)
+            lines[#lines+1] = string.format("add_button|df_del_tool_%d|`4Delete Storage (#%d)|noflags|0|0|", i, i)
+        end
+    end
+
+    lines[#lines+1] = "add_spacer|small|"
+    lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
+    if totalPages > 1 then
+        if page > 1 then
+            lines[#lines+1] = "add_button|df_btn_tool_prev|`w< Prev Page|noflags|0|0|"
+        end
+        if page < totalPages then
+            lines[#lines+1] = "add_button|df_btn_tool_next|`wNext Page >|noflags|0|0|"
+        end
+    end
+    lines[#lines+1] = "add_button|df_btn_back_tool_stor|`wBack|noflags|0|0|"
+    lines[#lines+1] = "end_dialog|df_tool_list|Close||"
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+-- 2.2 Gudang Seed (Compact)
 DLG.showDFSeedStorageDialog = function()
     local totalS = #(CFG.storage_seed_list or {})
     local lines = {
@@ -6820,32 +6866,71 @@ DLG.showDFSeedStorageDialog = function()
         "add_label_with_icon|big|`wGudang Seed (Dirt/Cave/Rock/Lava)``|left|3802|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
-        string.format("add_textbox|`wTotal Gudang Seed: `2(%d World)|left|", totalS),
+        string.format("add_textbox|`wTotal Registered Vault: `2(%d Storage)|left|", totalS),
+        "add_textbox|`wGudang seed untuk menyimpan hasil drop seed dari bot|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
         "add_text_input|df_in_seed_w|World Gudang Seed| |24|",
         "add_text_input|df_in_seed_d|Door ID (Optional)| |16|",
-        "add_button|df_btn_do_add_seed|`wTambah Gudang Seed `2(Add)|noflags|0|0|",
         "add_spacer|small|",
+        "add_button|df_btn_do_add_seed|`wSave Gudang Seed `2(Add)|noflags|0|0|",
+        string.format("add_button|df_btn_open_seed_list|`wList Gudang Seed `2(%d Storage)|noflags|0|0|", totalS),
+        "add_button|df_btn_clear_all_seed|`wKosongkan Gudang Seed `4(Clear)|noflags|0|0|",
+        "add_spacer|small|",
+        "add_button|df_btn_back_storage|`wBack|noflags|0|0|",
+        "end_dialog|df_seed_stor|Cancel||"
     }
-    if totalS == 0 then
-        lines[#lines+1] = "add_textbox|`4(Empty) `wBelum ada gudang seed terdaftar.|left|"
-    else
-        lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
-        for i, s in ipairs(CFG.storage_seed_list) do
-            local dStr = (s.door and s.door ~= "") and (":" .. s.door) or ""
-            lines[#lines+1] = string.format("add_textbox|`p#%d `w%s%s|left|", i, s.name, dStr)
-            lines[#lines+1] = string.format("add_button|df_del_seed_%d|`4Hapus Gudang (#%d)|noflags|0|0|", i, i)
-        end
-        lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
-        lines[#lines+1] = "add_button|df_btn_clear_all_seed|`wKosongkan Gudang Seed `4(Clear)|noflags|0|0|"
-    end
-    lines[#lines+1] = "add_spacer|small|"
-    lines[#lines+1] = "add_button|df_btn_back_storage|`wBack|noflags|0|0|"
-    lines[#lines+1] = "end_dialog|df_seed_stor|Close||"
     showClientDialog(table.concat(lines, "\n"))
 end
 
+-- 2.2.b List Gudang Seed (Compact Pagination)
+DLG.showDFSeedStorageListDialog = function(page)
+    local totalS = #(CFG.storage_seed_list or {})
+    local perPage = 5
+    local totalPages = math.max(1, math.ceil(totalS / perPage))
+    page = math.max(1, math.min(totalPages, tonumber(page) or DLG.seed_page or 1))
+    DLG.seed_page = page
+
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wList Gudang Seed``|left|3802|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wTotal Registered: `2(%d Storage) `p- `wPage `2(%d/%d)|left|", totalS, page, totalPages),
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|"
+    }
+
+    if totalS == 0 then
+        lines[#lines+1] = "add_textbox|`4(Storage is empty) `wBelum ada gudang seed terdaftar.|left|"
+    else
+        local startIdx = (page - 1) * perPage + 1
+        local endIdx = math.min(totalS, startIdx + perPage - 1)
+        for i = startIdx, endIdx do
+            local s = CFG.storage_seed_list[i]
+            local dStr = (s.door and s.door ~= "") and (":" .. s.door) or ""
+            lines[#lines+1] = string.format("add_textbox|`p- `w#%d. `b%s%s `2(Seed Vault)|left|", i, s.name, dStr)
+            lines[#lines+1] = string.format("add_button|df_del_seed_%d|`4Delete Storage (#%d)|noflags|0|0|", i, i)
+        end
+    end
+
+    lines[#lines+1] = "add_spacer|small|"
+    lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
+    if totalPages > 1 then
+        if page > 1 then
+            lines[#lines+1] = "add_button|df_btn_seed_prev|`w< Prev Page|noflags|0|0|"
+        end
+        if page < totalPages then
+            lines[#lines+1] = "add_button|df_btn_seed_next|`wNext Page >|noflags|0|0|"
+        end
+    end
+    lines[#lines+1] = "add_button|df_btn_back_seed_stor|`wBack|noflags|0|0|"
+    lines[#lines+1] = "end_dialog|df_seed_list|Close||"
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+-- 2.3 Pengaturan Drop & Threshold (Compact)
 DLG.showDFStorageThreshDialog = function()
     local saveThresh = tonumber(CFG.save_seed_threshold) or 180
     local lines = {
@@ -6871,7 +6956,7 @@ DLG.showDFStorageThreshDialog = function()
 end
 
 -- ============================================================================
--- 3. LOCK & DOOR CONFIG (HUB + SUB-DIALOGS)
+-- 3. LOCK & DOOR CONFIG (HUB + 4 DEDICATED COMPACT SUB-DIALOGS)
 -- ============================================================================
 DLG.showDFLockDialog = function()
     local wlBadge = CFG.use_wl and "`2(ON)" or "`4(OFF)"
@@ -7159,15 +7244,19 @@ local function handleDFDialogReturn(pkt)
     -- Add Single World
     elseif dName == "df_add_w" or pkt:find("dialog_name|df_add_w", 1, true) then
         if btn == "df_btn_do_add_world" or pkt:find("buttonClicked|df_btn_do_add_world", 1, true) then
-            local wName = getVal("df_in_world_name"):upper():gsub("%s+", "")
+            local rawW = getVal("df_in_world_name"):upper():gsub("%s+", "")
             local wDoor = getVal("df_in_door_id"):gsub("%s+", "")
+            local wName = rawW
+            if rawW:find(":") then
+                wName, wDoor = rawW:match("^([^:]+):?(.*)$")
+            end
             if wName and wName ~= "" then
                 local exists = false
                 for _, w in ipairs(CFG.world_list or {}) do
                     if w.name == wName then exists = true; break end
                 end
                 if not exists then
-                    table.insert(CFG.world_list, { name = wName, door = wDoor, done = false, status = "ANTRI" })
+                    table.insert(CFG.world_list, { name = wName, door = wDoor or "", done = false, status = "ANTRI" })
                     persistConfig()
                     if updateWorldDisplayList then pcall(updateWorldDisplayList) end
                     if sendNotification then pcall(sendNotification, "World " .. wName .. " ditambahkan!") end
@@ -7201,7 +7290,7 @@ local function handleDFDialogReturn(pkt)
         end
         return true
 
-    -- Find World (Random Generator)
+    -- Find Random World
     elseif dName == "df_find_w" or pkt:find("dialog_name|df_find_w", 1, true) then
         if btn == "df_btn_find_toggle_mode" or pkt:find("buttonClicked|df_btn_find_toggle_mode", 1, true) then
             CFG.world_mode = (CFG.world_mode == "random") and "manual" or "random"
@@ -7250,7 +7339,7 @@ local function handleDFDialogReturn(pkt)
         end
         return true
 
-    -- Batch Add Worlds
+    -- Batch Add World
     elseif dName == "df_batch_w" or pkt:find("dialog_name|df_batch_w", 1, true) then
         if btn == "df_btn_do_batch_add" or pkt:find("buttonClicked|df_btn_do_batch_add", 1, true) then
             local raw = getVal("df_in_batch_worlds")
@@ -7283,7 +7372,7 @@ local function handleDFDialogReturn(pkt)
         end
         return true
 
-    -- World List Manager
+    -- List World Farm Manager
     elseif dName == "df_w_list" or pkt:find("dialog_name|df_w_list", 1, true) then
         local delIdx = btn:match("^df_del_w_(%d+)$") or pkt:match("buttonClicked|df_del_w_(%d+)")
         if delIdx then
@@ -7332,32 +7421,34 @@ local function handleDFDialogReturn(pkt)
         end
         return true
 
-    -- Tool Storage
+    -- 2.1 Gudang Alat
     elseif dName == "df_tool_stor" or pkt:find("dialog_name|df_tool_stor", 1, true) then
-        local delIdx = btn:match("^df_del_tool_(%d+)$") or pkt:match("buttonClicked|df_del_tool_(%d+)")
-        if delIdx then
-            local idx = tonumber(delIdx)
-            if idx and CFG.storage_tool_list and CFG.storage_tool_list[idx] then
-                local rem = table.remove(CFG.storage_tool_list, idx)
-                persistConfig()
-                if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
-                if sendNotification then pcall(sendNotification, "Gudang Alat " .. tostring(rem.name) .. " dihapus!") end
-            end
-            DLG.showDFToolStorageDialog()
-            return true
-        elseif btn == "df_btn_do_add_tool" or pkt:find("buttonClicked|df_btn_do_add_tool", 1, true) then
-            local wName = getVal("df_in_tool_w"):upper():gsub("%s+", "")
+        if btn == "df_btn_do_add_tool" or pkt:find("buttonClicked|df_btn_do_add_tool", 1, true) then
+            local rawW = getVal("df_in_tool_w"):upper():gsub("%s+", "")
             local wDoor = getVal("df_in_tool_d"):gsub("%s+", "")
+            local wName = rawW
+            if rawW:find(":") then
+                wName, wDoor = rawW:match("^([^:]+):?(.*)$")
+            end
             if wName ~= "" then
-                table.insert(CFG.storage_tool_list, { name = wName, door = wDoor })
+                table.insert(CFG.storage_tool_list, { name = wName, door = wDoor or "" })
+                if #CFG.storage_tool_list > 0 then
+                    CFG.storage_pack_world = CFG.storage_tool_list[1].name
+                    CFG.storage_pack_door = CFG.storage_tool_list[1].door or ""
+                end
                 persistConfig()
                 if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
                 if sendNotification then pcall(sendNotification, "Gudang Alat " .. wName .. " ditambahkan!") end
             end
             DLG.showDFToolStorageDialog()
             return true
+        elseif btn == "df_btn_open_tool_list" or pkt:find("buttonClicked|df_btn_open_tool_list", 1, true) then
+            DLG.showDFToolStorageListDialog(1)
+            return true
         elseif btn == "df_btn_clear_all_tool" or pkt:find("buttonClicked|df_btn_clear_all_tool", 1, true) then
             CFG.storage_tool_list = {}
+            CFG.storage_pack_world = ""
+            CFG.storage_pack_door = ""
             persistConfig()
             if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
             if sendNotification then pcall(sendNotification, "Gudang Alat dikosongkan!") end
@@ -7369,32 +7460,66 @@ local function handleDFDialogReturn(pkt)
         end
         return true
 
-    -- Seed Storage
-    elseif dName == "df_seed_stor" or pkt:find("dialog_name|df_seed_stor", 1, true) then
-        local delIdx = btn:match("^df_del_seed_(%d+)$") or pkt:match("buttonClicked|df_del_seed_(%d+)")
+    -- 2.1.b List Gudang Alat
+    elseif dName == "df_tool_list" or pkt:find("dialog_name|df_tool_list", 1, true) then
+        local delIdx = btn:match("^df_del_tool_(%d+)$") or pkt:match("buttonClicked|df_del_tool_(%d+)")
         if delIdx then
             local idx = tonumber(delIdx)
-            if idx and CFG.storage_seed_list and CFG.storage_seed_list[idx] then
-                local rem = table.remove(CFG.storage_seed_list, idx)
+            if idx and CFG.storage_tool_list and CFG.storage_tool_list[idx] then
+                local rem = table.remove(CFG.storage_tool_list, idx)
+                if #CFG.storage_tool_list > 0 then
+                    CFG.storage_pack_world = CFG.storage_tool_list[1].name
+                    CFG.storage_pack_door = CFG.storage_tool_list[1].door or ""
+                else
+                    CFG.storage_pack_world = ""
+                    CFG.storage_pack_door = ""
+                end
                 persistConfig()
-                if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
-                if sendNotification then pcall(sendNotification, "Gudang Seed " .. tostring(rem.name) .. " dihapus!") end
+                if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
+                if sendNotification then pcall(sendNotification, "Gudang Alat " .. tostring(rem.name) .. " dihapus!") end
             end
-            DLG.showDFSeedStorageDialog()
+            DLG.showDFToolStorageListDialog(DLG.tool_page)
             return true
-        elseif btn == "df_btn_do_add_seed" or pkt:find("buttonClicked|df_btn_do_add_seed", 1, true) then
-            local wName = getVal("df_in_seed_w"):upper():gsub("%s+", "")
+        elseif btn == "df_btn_tool_prev" or pkt:find("buttonClicked|df_btn_tool_prev", 1, true) then
+            DLG.showDFToolStorageListDialog(DLG.tool_page - 1)
+            return true
+        elseif btn == "df_btn_tool_next" or pkt:find("buttonClicked|df_btn_tool_next", 1, true) then
+            DLG.showDFToolStorageListDialog(DLG.tool_page + 1)
+            return true
+        elseif btn == "df_btn_back_tool_stor" or pkt:find("buttonClicked|df_btn_back_tool_stor", 1, true) then
+            DLG.showDFToolStorageDialog()
+            return true
+        end
+        return true
+
+    -- 2.2 Gudang Seed
+    elseif dName == "df_seed_stor" or pkt:find("dialog_name|df_seed_stor", 1, true) then
+        if btn == "df_btn_do_add_seed" or pkt:find("buttonClicked|df_btn_do_add_seed", 1, true) then
+            local rawW = getVal("df_in_seed_w"):upper():gsub("%s+", "")
             local wDoor = getVal("df_in_seed_d"):gsub("%s+", "")
+            local wName = rawW
+            if rawW:find(":") then
+                wName, wDoor = rawW:match("^([^:]+):?(.*)$")
+            end
             if wName ~= "" then
-                table.insert(CFG.storage_seed_list, { name = wName, door = wDoor })
+                table.insert(CFG.storage_seed_list, { name = wName, door = wDoor or "" })
+                if #CFG.storage_seed_list > 0 then
+                    CFG.storage_seed_world = CFG.storage_seed_list[1].name
+                    CFG.storage_seed_door = CFG.storage_seed_list[1].door or ""
+                end
                 persistConfig()
                 if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
                 if sendNotification then pcall(sendNotification, "Gudang Seed " .. wName .. " ditambahkan!") end
             end
             DLG.showDFSeedStorageDialog()
             return true
+        elseif btn == "df_btn_open_seed_list" or pkt:find("buttonClicked|df_btn_open_seed_list", 1, true) then
+            DLG.showDFSeedStorageListDialog(1)
+            return true
         elseif btn == "df_btn_clear_all_seed" or pkt:find("buttonClicked|df_btn_clear_all_seed", 1, true) then
             CFG.storage_seed_list = {}
+            CFG.storage_seed_world = ""
+            CFG.storage_seed_door = ""
             persistConfig()
             if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
             if sendNotification then pcall(sendNotification, "Gudang Seed dikosongkan!") end
@@ -7406,7 +7531,39 @@ local function handleDFDialogReturn(pkt)
         end
         return true
 
-    -- Threshold & Drop Config
+    -- 2.2.b List Gudang Seed
+    elseif dName == "df_seed_list" or pkt:find("dialog_name|df_seed_list", 1, true) then
+        local delIdx = btn:match("^df_del_seed_(%d+)$") or pkt:match("buttonClicked|df_del_seed_(%d+)")
+        if delIdx then
+            local idx = tonumber(delIdx)
+            if idx and CFG.storage_seed_list and CFG.storage_seed_list[idx] then
+                local rem = table.remove(CFG.storage_seed_list, idx)
+                if #CFG.storage_seed_list > 0 then
+                    CFG.storage_seed_world = CFG.storage_seed_list[1].name
+                    CFG.storage_seed_door = CFG.storage_seed_list[1].door or ""
+                else
+                    CFG.storage_seed_world = ""
+                    CFG.storage_seed_door = ""
+                end
+                persistConfig()
+                if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
+                if sendNotification then pcall(sendNotification, "Gudang Seed " .. tostring(rem.name) .. " dihapus!") end
+            end
+            DLG.showDFSeedStorageListDialog(DLG.seed_page)
+            return true
+        elseif btn == "df_btn_seed_prev" or pkt:find("buttonClicked|df_btn_seed_prev", 1, true) then
+            DLG.showDFSeedStorageListDialog(DLG.seed_page - 1)
+            return true
+        elseif btn == "df_btn_seed_next" or pkt:find("buttonClicked|df_btn_seed_next", 1, true) then
+            DLG.showDFSeedStorageListDialog(DLG.seed_page + 1)
+            return true
+        elseif btn == "df_btn_back_seed_stor" or pkt:find("buttonClicked|df_btn_back_seed_stor", 1, true) then
+            DLG.showDFSeedStorageDialog()
+            return true
+        end
+        return true
+
+    -- 2.3 Pengaturan Drop & Threshold
     elseif dName == "df_thresh_stor" or pkt:find("dialog_name|df_thresh_stor", 1, true) then
         if btn == "df_btn_save_thresh_cfg" or pkt:find("buttonClicked|df_btn_save_thresh_cfg", 1, true) then
             local thVal = tonumber(getVal("df_in_save_thresh"))
@@ -7560,6 +7717,16 @@ _G.showDFWorldsDialog = function() if DLG.showDFWorldsDialog then DLG.showDFWorl
 _G.showDFStorageDialog = function() if DLG.showDFStorageDialog then DLG.showDFStorageDialog() end end
 _G.showDFLockDialog = function() if DLG.showDFLockDialog then DLG.showDFLockDialog() end end
 _G.handleDFDialogReturn = handleDFDialogReturn
+
+-- Alihkan seluruh pemanggilan dialog legacy ke sistem compact dialog resmi
+openWorldListManagerDialog = DLG.showDFWorldsDialog
+openPasteWorldListDialog = DLG.showDFBatchWorldDialog
+openUnifiedToolManager = DLG.showDFToolStorageDialog
+openUnifiedSeedManager = DLG.showDFSeedStorageDialog
+
+_G.openWorldListManagerDialog = DLG.showDFWorldsDialog
+_G.openUnifiedToolManager = DLG.showDFToolStorageDialog
+_G.openUnifiedSeedManager = DLG.showDFSeedStorageDialog
 
 -- Central Packet Hook untuk Dialog DF
 local function dfDialogOnSendPacket(arg1, arg2)
