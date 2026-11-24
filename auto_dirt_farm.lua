@@ -2792,8 +2792,49 @@ local function onVariantDialogHook(var, pkt)
     end
 end
 
-local function onSendPacketDialogHook(ptype, pkt)
-    if type(pkt) ~= "string" then return end
+local function onSendPacketDialogHook(arg1, arg2)
+    local pStr = nil
+    local pType = nil
+    if type(arg1) == "string" then
+        pStr = arg1
+        pType = (type(arg2) == "number") and arg2 or nil
+    elseif type(arg2) == "string" then
+        pStr = arg2
+        pType = (type(arg1) == "number") and arg1 or nil
+    elseif type(arg1) == "table" then
+        pStr = arg1.str or arg1.packet or arg1.text or arg1.data or arg1[2] or arg1[1]
+        pType = tonumber(arg1.type)
+    elseif type(arg2) == "table" then
+        pStr = arg2.str or arg2.packet or arg2.text or arg2.data or arg2[2] or arg2[1]
+        pType = tonumber(arg2.type)
+    end
+    if not pStr or type(pStr) ~= "string" then return false end
+
+    -- Intersepsi Chat Command (/df, /dirtfarm, /farm, /dfarm, /menu, /boren)
+    local lowerP = pStr:lower()
+    if lowerP:find("/df", 1, true) or lowerP:find("/dirtfarm", 1, true) or lowerP:find("/farm", 1, true) or lowerP:find("/dfarm", 1, true) or lowerP:find("/menu", 1, true) or lowerP:find("/boren", 1, true) then
+        if lowerP:find("action|input", 1, true) or lowerP:find("text|/", 1, true) or lowerP:find("action|chat", 1, true) or lowerP:sub(1, 1) == "/" then
+            local cmd = lowerP:match("|text|(/[a-z0-9_]+)") or lowerP:match("text|(/[a-z0-9_]+)") or lowerP:match("(/[a-z0-9_]+)")
+            if cmd == "/df" or cmd == "/dirtfarm" or cmd == "/farm" or cmd == "/dfarm" or cmd == "/menu" or cmd == "/boren" then
+                local openFn = _G.showDFMainDialog or showDFMainDialog
+                if openFn then
+                    pcall(openFn)
+                    if LogToConsole then pcall(LogToConsole, "`2[BOREN DF] `wMenu Dialog dibuka via chat: `e" .. tostring(cmd)) end
+                end
+                return true
+            end
+        end
+    end
+
+    -- Intersepsi Dialog Return Compact DF
+    if pStr:find("action|dialog_return", 1, true) then
+        local handler = _G.handleDFDialogReturn or handleDFDialogReturn
+        if handler and handler(pStr) then
+            return true
+        end
+    end
+
+    local pkt = pStr
     local ok, shouldBlock = pcall(function()
         if not pkt:find("action|dialog_return", 1, true) then
             return false
@@ -3284,8 +3325,11 @@ local function ensureRuntimeHooks()
     STATE.runtime_hooks_installed = true
     onVariant = onVariantDialogHook
     OnVariant = onVariantDialogHook
-    onSendPacket = onSendPacketDialogHook
-    OnSendPacket = onSendPacketDialogHook
+    local currentSendHook = _G.dfDialogOnSendPacket or onSendPacketDialogHook
+    onSendPacket = currentSendHook
+    OnSendPacket = currentSendHook
+    _G.onSendPacket = currentSendHook
+    _G.OnSendPacket = currentSendHook
     onSendPacketRaw = onSendPacketRawCollectHook
     OnSendPacketRaw = onSendPacketRawCollectHook
     if addHook then
@@ -6482,12 +6526,24 @@ do -- SC DIRT FARM COMPACT DIALOG BLOCK (scoped to avoid 200-local limit)
 -- ============================================================================
 
 local function showClientDialog(dText)
-    local ok1 = pcall(sendVariant, { v1 = "OnDialogRequest", v2 = dText })
-    if ok1 then return end
-    local ok2 = pcall(sendVariant, { [1] = "OnDialogRequest", [2] = dText })
-    if ok2 then return end
-    if growtopia and growtopia.sendDialog then pcall(growtopia.sendDialog, dText)
-    elseif sendDialog then pcall(sendDialog, dText) end
+    if not dText or dText == "" then return false end
+    if growtopia and type(growtopia.sendDialog) == "function" then
+        local ok = pcall(growtopia.sendDialog, dText)
+        if ok then return true end
+    end
+    if sendVariant then
+        local ok1 = pcall(sendVariant, { v1 = "OnDialogRequest", v2 = dText })
+        if ok1 then return true end
+        local okNum = pcall(sendVariant, { [1] = "OnDialogRequest", [2] = dText })
+        if okNum then return true end
+    end
+    if sendVariantList then
+        local okList = pcall(sendVariantList, { [1] = "OnDialogRequest", [2] = dText })
+        if okList then return true end
+    end
+    if sendDialog then
+        pcall(sendDialog, dText)
+    end
 end
 
 local function showDFMainDialog()
@@ -6699,20 +6755,30 @@ local function showDFLogsDialog()
 end
 
 local function handleDFDialogReturn(pkt)
-    local dName = pkt:match("dialog_name|([^\n\r]+)") or ""
+    if not pkt or type(pkt) ~= "string" then return false end
+    local fields = {}
+    for line in pkt:gmatch("[^\r\n]+") do
+        local k, v = line:match("^([^|]+)|(.*)$")
+        if k then fields[k] = v end
+    end
+    local dName = fields.dialog_name or pkt:match("dialog_name|([^\r\n|]+)") or ""
+    local btn = fields.buttonClicked or pkt:match("buttonClicked|([^\r\n|]+)") or ""
     local function getVal(key)
-        return pkt:match(key .. "|([^\n\r|]+)") or ""
+        return fields[key] or pkt:match(key .. "|([^\r\n|]+)") or ""
     end
 
-    if dName == "df_main" then
-        local btn = getVal("buttonClicked")
-        if btn == "df_btn_dlg_start" then
+    if dName == "df_main" or pkt:find("dialog_name|df_main", 1, true) then
+        if btn == "df_btn_dlg_start" or pkt:find("buttonClicked|df_btn_dlg_start", 1, true) then
             if not STATE.running then startAutoDF() end
-        elseif btn == "df_btn_dlg_stop" then
+            showDFMainDialog()
+            return true
+        elseif btn == "df_btn_dlg_stop" or pkt:find("buttonClicked|df_btn_dlg_stop", 1, true) then
             STATE.running = false; STATE.paused = false
             setStatus("Stopping", "Menghentikan bot...")
             updatePowerStatusList()
-        elseif btn == "df_btn_dlg_add_cur" then
+            showDFMainDialog()
+            return true
+        elseif btn == "df_btn_dlg_add_cur" or pkt:find("buttonClicked|df_btn_dlg_add_cur", 1, true) then
             local cw = getWorldNameSafe()
             if cw and cw ~= "" and cw ~= "EXIT" then
                 local exists = false
@@ -6729,16 +6795,27 @@ local function handleDFDialogReturn(pkt)
                 end
             end
             showDFMainDialog()
-        elseif btn == "df_btn_dlg_worlds" then showDFWorldsDialog()
-        elseif btn == "df_btn_dlg_storage" then showDFStorageDialog()
-        elseif btn == "df_btn_dlg_lock" then showDFLockDialog()
-        elseif btn == "df_btn_dlg_settings" then showDFSettingsDialog()
-        elseif btn == "df_btn_dlg_logs" then showDFLogsDialog()
+            return true
+        elseif btn == "df_btn_dlg_worlds" or pkt:find("buttonClicked|df_btn_dlg_worlds", 1, true) then
+            showDFWorldsDialog()
+            return true
+        elseif btn == "df_btn_dlg_storage" or pkt:find("buttonClicked|df_btn_dlg_storage", 1, true) then
+            showDFStorageDialog()
+            return true
+        elseif btn == "df_btn_dlg_lock" or pkt:find("buttonClicked|df_btn_dlg_lock", 1, true) then
+            showDFLockDialog()
+            return true
+        elseif btn == "df_btn_dlg_settings" or pkt:find("buttonClicked|df_btn_dlg_settings", 1, true) then
+            showDFSettingsDialog()
+            return true
+        elseif btn == "df_btn_dlg_logs" or pkt:find("buttonClicked|df_btn_dlg_logs", 1, true) then
+            showDFLogsDialog()
+            return true
         end
+        return true
 
-    elseif dName == "df_worlds" then
-        local btn = getVal("buttonClicked")
-        if btn == "df_btn_dlg_do_add_world" then
+    elseif dName == "df_worlds" or pkt:find("dialog_name|df_worlds", 1, true) then
+        if btn == "df_btn_dlg_do_add_world" or pkt:find("buttonClicked|df_btn_dlg_do_add_world", 1, true) then
             local wName = getVal("df_in_world_name"):upper():gsub("%s+", "")
             local wDoor = getVal("df_in_door_id"):gsub("%s+", "")
             if wName and wName ~= "" then
@@ -6756,18 +6833,22 @@ local function handleDFDialogReturn(pkt)
                 end
             end
             showDFWorldsDialog()
-        elseif btn == "df_btn_dlg_reset_queue" then
+            return true
+        elseif btn == "df_btn_dlg_reset_queue" or pkt:find("buttonClicked|df_btn_dlg_reset_queue", 1, true) then
             for _, w in ipairs(CFG.world_list or {}) do w.done = false; w.status = "ANTRI" end
             persistConfig()
             if updateWorldDisplayList then pcall(updateWorldDisplayList) end
             if sendNotification then pcall(sendNotification, "Status queue di-reset!") end
             showDFWorldsDialog()
-        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
+            return true
+        elseif btn == "df_btn_dlg_back_main" or pkt:find("buttonClicked|df_btn_dlg_back_main", 1, true) then
+            showDFMainDialog()
+            return true
         end
+        return true
 
-    elseif dName == "df_storage" then
-        local btn = getVal("buttonClicked")
-        if btn == "df_btn_dlg_add_tool" then
+    elseif dName == "df_storage" or pkt:find("dialog_name|df_storage", 1, true) then
+        if btn == "df_btn_dlg_add_tool" or pkt:find("buttonClicked|df_btn_dlg_add_tool", 1, true) then
             local wName = getVal("df_in_tool_world"):upper():gsub("%s+", "")
             if wName ~= "" then
                 table.insert(CFG.storage_tool_list, { name = wName, door = "" })
@@ -6776,14 +6857,16 @@ local function handleDFDialogReturn(pkt)
                 if sendNotification then pcall(sendNotification, "Gudang Alat " .. wName .. " ditambahkan!") end
             end
             showDFStorageDialog()
-        elseif btn == "df_btn_dlg_clear_tool" then
+            return true
+        elseif btn == "df_btn_dlg_clear_tool" or pkt:find("buttonClicked|df_btn_dlg_clear_tool", 1, true) then
             CFG.storage_tool_list = {}
             CFG.storage_pack_world = ""; CFG.storage_pack_door = ""
             persistConfig()
             if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
             if sendNotification then pcall(sendNotification, "Gudang Alat dikosongkan!") end
             showDFStorageDialog()
-        elseif btn == "df_btn_dlg_add_seed" then
+            return true
+        elseif btn == "df_btn_dlg_add_seed" or pkt:find("buttonClicked|df_btn_dlg_add_seed", 1, true) then
             local wName = getVal("df_in_seed_world"):upper():gsub("%s+", "")
             if wName ~= "" then
                 table.insert(CFG.storage_seed_list, { name = wName, door = "" })
@@ -6792,19 +6875,23 @@ local function handleDFDialogReturn(pkt)
                 if sendNotification then pcall(sendNotification, "Gudang Seed " .. wName .. " ditambahkan!") end
             end
             showDFStorageDialog()
-        elseif btn == "df_btn_dlg_clear_seed" then
+            return true
+        elseif btn == "df_btn_dlg_clear_seed" or pkt:find("buttonClicked|df_btn_dlg_clear_seed", 1, true) then
             CFG.storage_seed_list = {}
             CFG.storage_seed_world = ""; CFG.storage_seed_door = ""
             persistConfig()
             if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
             if sendNotification then pcall(sendNotification, "Gudang Seed dikosongkan!") end
             showDFStorageDialog()
-        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
+            return true
+        elseif btn == "df_btn_dlg_back_main" or pkt:find("buttonClicked|df_btn_dlg_back_main", 1, true) then
+            showDFMainDialog()
+            return true
         end
+        return true
 
-    elseif dName == "df_lock" then
-        local btn = getVal("buttonClicked")
-        if btn == "df_btn_dlg_save_lock" then
+    elseif dName == "df_lock" or pkt:find("dialog_name|df_lock", 1, true) then
+        if btn == "df_btn_dlg_save_lock" or pkt:find("buttonClicked|df_btn_dlg_save_lock", 1, true) then
             CFG.ignore_lock = (getVal("df_dlg_ignore_lock") == "1")
             CFG.use_wl = (getVal("df_dlg_use_wl") == "1"); CFG.wl_public = CFG.use_wl
             CFG.use_sl = (getVal("df_dlg_use_sl") == "1")
@@ -6822,12 +6909,15 @@ local function handleDFDialogReturn(pkt)
             persistConfig()
             if sendNotification then pcall(sendNotification, "Lock config disimpan!") end
             showDFLockDialog()
-        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
+            return true
+        elseif btn == "df_btn_dlg_back_main" or pkt:find("buttonClicked|df_btn_dlg_back_main", 1, true) then
+            showDFMainDialog()
+            return true
         end
+        return true
 
-    elseif dName == "df_settings" then
-        local btn = getVal("buttonClicked")
-        if btn == "df_btn_dlg_save_settings" then
+    elseif dName == "df_settings" or pkt:find("dialog_name|df_settings", 1, true) then
+        if btn == "df_btn_dlg_save_settings" or pkt:find("buttonClicked|df_btn_dlg_save_settings", 1, true) then
             CFG.use_modfly = (getVal("df_dlg_modfly") == "1")
             CFG.use_anti_lava = (getVal("df_dlg_anti_lava") == "1")
             CFG.auto_collect = (getVal("df_dlg_auto_collect") == "1")
@@ -6841,49 +6931,111 @@ local function handleDFDialogReturn(pkt)
             persistConfig()
             if sendNotification then pcall(sendNotification, "Settings DF disimpan!") end
             showDFSettingsDialog()
-        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
-        end
-
-    elseif dName == "df_logs" then
-        local btn = getVal("buttonClicked")
-        if btn == "df_btn_dlg_clear_logs" then
-            STATE.logs = {}; STATE.error_logs = {}; STATE.error_count = 0
-            if sendNotification then pcall(sendNotification, "Log dibersihkan!") end
-            showDFLogsDialog()
-        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
-        end
-    end
-end
-
--- Chat Command Hook (/df)
-ensureRuntimeHooks()
-local function onSendDFCommandHook(ptype, pkt)
-    if ptype ~= 2 then return end
-    local body = type(pkt) == "string" and pkt or ""
-    if body == "" then
-        local ok, s = pcall(tostring, pkt); if ok then body = s end
-    end
-    local cmd = body:match("action|input\r?\ntext|(/[^\r\n]+)") or body:match("text|(/[^\r\n]+)")
-    if cmd then
-        cmd = cmd:lower():gsub("%s+", "")
-        if cmd == "/df" or cmd == "/dirtfarm" or cmd == "/farm" then
+            return true
+        elseif btn == "df_btn_dlg_back_main" or pkt:find("buttonClicked|df_btn_dlg_back_main", 1, true) then
             showDFMainDialog()
             return true
         end
+        return true
+
+    elseif dName == "df_logs" or pkt:find("dialog_name|df_logs", 1, true) then
+        if btn == "df_btn_dlg_clear_logs" or pkt:find("buttonClicked|df_btn_dlg_clear_logs", 1, true) then
+            STATE.logs = {}; STATE.error_logs = {}; STATE.error_count = 0
+            if sendNotification then pcall(sendNotification, "Log dibersihkan!") end
+            showDFLogsDialog()
+            return true
+        elseif btn == "df_btn_dlg_back_main" or pkt:find("buttonClicked|df_btn_dlg_back_main", 1, true) then
+            showDFMainDialog()
+            return true
+        end
+        return true
     end
-    if body:match("action|dialog_return") then
-        local dn = body:match("dialog_name|([^\r\n]+)")
-        if dn and dn:sub(1, 3) == "df_" then
-            handleDFDialogReturn(body)
+
+    return false
+end
+
+-- Ekspor fungsi dialog ke _G agar loader & command handler selalu dapat memanggilnya
+_G.showDFMainDialog = function() if showDFMainDialog then showDFMainDialog() end end
+_G.handleDFDialogReturn = handleDFDialogReturn
+
+-- Central Packet Hook untuk Dialog DF
+local function dfDialogOnSendPacket(arg1, arg2)
+    local pStr = nil
+    local pType = nil
+    if type(arg1) == "string" then
+        pStr = arg1
+        pType = (type(arg2) == "number") and arg2 or nil
+    elseif type(arg2) == "string" then
+        pStr = arg2
+        pType = (type(arg1) == "number") and arg1 or nil
+    elseif type(arg1) == "table" then
+        pStr = arg1.str or arg1.packet or arg1.text or arg1.data or arg1[2] or arg1[1]
+        pType = tonumber(arg1.type)
+    elseif type(arg2) == "table" then
+        pStr = arg2.str or arg2.packet or arg2.text or arg2.data or arg2[2] or arg2[1]
+        pType = tonumber(arg2.type)
+    end
+    if not pStr or type(pStr) ~= "string" then return false end
+
+    -- Intersepsi Chat Command (/df, /dirtfarm, /farm, /dfarm, /menu, /boren)
+    local lowerP = pStr:lower()
+    if lowerP:find("/df", 1, true) or lowerP:find("/dirtfarm", 1, true) or lowerP:find("/farm", 1, true) or lowerP:find("/dfarm", 1, true) or lowerP:find("/menu", 1, true) or lowerP:find("/boren", 1, true) then
+        if lowerP:find("action|input", 1, true) or lowerP:find("text|/", 1, true) or lowerP:find("action|chat", 1, true) or lowerP:sub(1, 1) == "/" then
+            local cmd = lowerP:match("|text|(/[a-z0-9_]+)") or lowerP:match("text|(/[a-z0-9_]+)") or lowerP:match("(/[a-z0-9_]+)")
+            if cmd == "/df" or cmd == "/dirtfarm" or cmd == "/farm" or cmd == "/dfarm" or cmd == "/menu" or cmd == "/boren" then
+                pcall(showDFMainDialog)
+                if LogToConsole then pcall(LogToConsole, "`2[BOREN DF] `wMenu Dialog dibuka via chat: `e" .. tostring(cmd)) end
+                return true
+            end
+        end
+    end
+
+    -- Intersepsi Dialog Return Compact DF
+    if pStr:find("action|dialog_return", 1, true) then
+        if handleDFDialogReturn(pStr) then
+            return true
+        end
+        if onSendPacketDialogHook and onSendPacketDialogHook(pType, pStr) then
             return true
         end
     end
+
+    return false
 end
-if addHook then pcall(addHook, onSendDFCommandHook, "onsendpacket") end
-_G.onSendPacketDFDialog = onSendDFCommandHook
+
+-- Ekspor hook ke seluruh varian variabel global Growlauncher
+onSendPacket = dfDialogOnSendPacket
+OnSendPacket = dfDialogOnSendPacket
+_G.onSendPacket = dfDialogOnSendPacket
+_G.OnSendPacket = dfDialogOnSendPacket
+_G.dfDialogOnSendPacket = dfDialogOnSendPacket
+
+-- Registrasi hook via SEMUA format engine Growlauncher
+local hookFuncs = { addHook, AddHook, hook, Hook }
+for _, h in ipairs(hookFuncs) do
+    if type(h) == "function" then
+        pcall(h, dfDialogOnSendPacket, "onsendpacket")
+        pcall(h, dfDialogOnSendPacket, "onSendPacket")
+        pcall(h, dfDialogOnSendPacket, "OnSendPacket")
+        pcall(h, "onsendpacket", dfDialogOnSendPacket)
+        pcall(h, "onSendPacket", dfDialogOnSendPacket)
+        pcall(h, "OnSendPacket", dfDialogOnSendPacket)
+        pcall(h, "onsendpacket", "boren_df_hook", dfDialogOnSendPacket)
+        pcall(h, "onSendPacket", "boren_df_hook", dfDialogOnSendPacket)
+        pcall(h, "OnSendPacket", "boren_df_hook", dfDialogOnSendPacket)
+    end
+end
+if AddHookCallback then
+    pcall(AddHookCallback, dfDialogOnSendPacket, "onsendpacket")
+    pcall(AddHookCallback, dfDialogOnSendPacket, "onSendPacket")
+    pcall(AddHookCallback, "onsendpacket", dfDialogOnSendPacket)
+    pcall(AddHookCallback, "onSendPacket", dfDialogOnSendPacket)
+end
+if applyHook then pcall(applyHook) end
+if ApplyHook then pcall(ApplyHook) end
 
 if sendNotification then pcall(sendNotification, "SC Dirt Farm: Ketik /df di chat untuk menu!") end
-if LogToConsole then pcall(LogToConsole, "`2[SC DF Dialog] `wKetik `b/df `wdi chat untuk buka dialog!") end
+if LogToConsole then pcall(LogToConsole, "`2[SC DF Dialog] `wKetik `b/df `watau `b/dirtfarm `wdi chat game!") end
 
 end -- end do block for SC DIRT FARM COMPACT DIALOG
 
@@ -7633,3 +7785,12 @@ _G.onSendPacketDialogHook = onSendPacketDialogHook
 
 _G.CFG = CFG
 _G.STATE = STATE
+
+if _G.dfDialogOnSendPacket then
+    onSendPacket = _G.dfDialogOnSendPacket
+    OnSendPacket = _G.dfDialogOnSendPacket
+    _G.onSendPacket = _G.dfDialogOnSendPacket
+    _G.OnSendPacket = _G.dfDialogOnSendPacket
+    if applyHook then pcall(applyHook) end
+    if ApplyHook then pcall(ApplyHook) end
+end

@@ -58,12 +58,12 @@ local function loaderFastPacketHook(arg1, arg2)
 
     if not pStr or type(pStr) ~= "string" then return false end
 
-    -- Intersepsi Chat Command /df, /dirtfarm, /farm
+    -- Intersepsi Chat Command /df, /dirtfarm, /farm, /dfarm, /boren, /menu
     local lowerP = pStr:lower()
-    if lowerP:find("/df", 1, true) or lowerP:find("/dirtfarm", 1, true) or lowerP:find("/farm", 1, true) then
+    if lowerP:find("/df", 1, true) or lowerP:find("/dirtfarm", 1, true) or lowerP:find("/farm", 1, true) or lowerP:find("/dfarm", 1, true) or lowerP:find("/boren", 1, true) or lowerP:find("/menu", 1, true) then
         if lowerP:find("action|input", 1, true) or lowerP:find("text|/", 1, true) or lowerP:find("action|chat", 1, true) or lowerP:sub(1, 1) == "/" then
             local cmd = lowerP:match("|text|(/[a-z0-9_]+)") or lowerP:match("text|(/[a-z0-9_]+)") or lowerP:match("(/[a-z0-9_]+)")
-            if cmd == "/df" or cmd == "/dirtfarm" or cmd == "/farm" then
+            if cmd == "/df" or cmd == "/dirtfarm" or cmd == "/farm" or cmd == "/dfarm" or cmd == "/boren" or cmd == "/menu" then
                 local openFn = _G.showDFMainDialog or showDFMainDialog
                 if openFn then
                     pcall(openFn)
