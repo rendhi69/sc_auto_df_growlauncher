@@ -417,7 +417,7 @@ local CFG = {
     use_modfly          = loadPref("use_modfly", true),
     auto_reconnect      = loadPref("auto_reconnect", true),
     clear_sides         = loadPref("clear_sides", true),
-    break_3_mode        = loadPref("break_3_mode", false),
+    break_3_mode        = loadPref("break_3_mode", true),
     break_cave_bg       = loadPref("break_cave_bg", true),
     break_lava          = loadPref("break_lava", true),
     break_rock          = loadPref("break_rock", false),
@@ -4616,7 +4616,8 @@ local function syncInputsFromGL()
 
     local bItemId = readGLItemOrInt("df_input_blocker", nil) or readGLItemOrInt("df_pick_blocker", nil)
     if bItemId and bItemId > 0 then CFG.blocker_door_itemid = bItemId end
-    CFG.world_mode = readGLBool("df_world_random", CFG.world_mode == "random") and "random" or "manual"
+    -- Jangan overwrite world_mode dari GL jika sudah diatur via dialog, sinkronkan ke GL toggle saja
+    if editToggle then pcall(editToggle, "df_world_random", CFG.world_mode == "random") end
     local rTgt = tonumber(readGLString("df_random_target", ""))
     if rTgt and rTgt >= 1 then CFG.random_target_count = math.floor(rTgt) end
     local wFile = readGLString("df_world_file", "")
@@ -4658,17 +4659,10 @@ local function acquireTargetWorld()
             end
         end
 
-        -- Jika list world masih kosong total, otomatis ambil dari input manual atau world saat ini
+        -- Jika list world masih kosong tapi ada input manual di buffer
         if #CFG.world_list == 0 and STATE.buf_world_name ~= "" then
             addManualWorldsFromString(STATE.buf_world_name, STATE.buf_world_door, false)
             hasPending = (#CFG.world_list > 0)
-        end
-        if not hasPending and #CFG.world_list == 0 then
-            local curW = getWorldNameSafe()
-            if curW ~= "" and curW ~= "EXIT" and curW ~= "START" then
-                addLog("List world kosong, otomatis memakai world saat ini: " .. curW)
-                addManualWorldsFromString(curW, STATE.buf_world_door, false)
-            end
         end
 
         for idx, entry in ipairs(CFG.world_list) do
@@ -4692,9 +4686,10 @@ local function acquireTargetWorld()
         STATE.active_world = ""
         STATE.active_door = ""
         local msg = (#CFG.world_list == 0)
-            and "List world kosong! Isi Nama World atau nyalakan Mode Random."
-            or "Semua world di list sudah selesai! Tambah world baru atau Reset."
+            and "List world antrean kosong! Tambahkan world di Setting World Farm atau aktifkan Mode Find Random World."
+            or "Semua world di list sudah selesai! Tambah world baru atau Reset antrean."
         setStatus("Info World", msg)
+        addLog(msg)
         if sendNotification then pcall(sendNotification, msg) end
         return nil, nil, nil
     else
@@ -6503,7 +6498,7 @@ DLG.showDFMainDialog = function()
         "add_label_with_icon|big|`wBoren Auto Dirt Farm``|left|8|",
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
-        string.format("add_textbox|`wStatus: %s `p- `wWorld: `b%s `p- `wMode: %s|left|", stBadge, curW, modeBadge),
+        string.format("add_textbox|`wStatus: %s `p- `wWorld: `b%s `p- `wBreak 3: `2(%s)|left|", stBadge, curW, (CFG.break_3_mode ~= false) and "ON" or "OFF"),
         string.format("add_textbox|`wQueue: `2(%d World) `p- `wDone: `2(%d)|left|", wCount, doneCount),
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
@@ -7016,6 +7011,7 @@ DLG.showDFSettingsDialog = function()
         "add_textbox|`wKonfigurasi delay bot, auto reconnect & mod fly:|left|",
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
+        string.format("add_checkbox|df_chk_break_3_mode|Break 3 Tile Sekaligus (Fast DF)|%d|", (CFG.break_3_mode ~= false) and 1 or 0),
         string.format("add_checkbox|df_chk_modfly|Aktifkan Modfly & Noclip|%d|", CFG.modfly and 1 or 0),
         string.format("add_checkbox|df_chk_anti_lava|Anti Lava Bounce|%d|", CFG.anti_lava and 1 or 0),
         string.format("add_checkbox|df_chk_auto_reconnect|Auto Reconnect jika DC|%d|", CFG.auto_reconnect and 1 or 0),
@@ -7592,6 +7588,10 @@ local function handleDFDialogReturn(pkt)
     -- --- E. SETTINGS & DELAYS ---
     elseif dName == "df_settings" or pkt:find("dialog_name|df_settings", 1, true) then
         if btn == "df_btn_save_settings_cfg" or pkt:find("buttonClicked|df_btn_save_settings_cfg", 1, true) then
+            local b3Val = getVal("df_chk_break_3_mode")
+            if b3Val ~= "" then
+                CFG.break_3_mode = (b3Val:find("1") ~= nil)
+            end
             CFG.modfly = (getVal("df_chk_modfly"):find("1") ~= nil)
             CFG.anti_lava = (getVal("df_chk_anti_lava"):find("1") ~= nil)
             CFG.auto_reconnect = (getVal("df_chk_auto_reconnect"):find("1") ~= nil)
