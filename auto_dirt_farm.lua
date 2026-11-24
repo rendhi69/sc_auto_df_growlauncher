@@ -2069,10 +2069,25 @@ local function isPlayerOnlineInWorld()
     return true, curW
 end
 
--- Saat Disconnect / terlempar ke EXIT, tunggu hingga online kembali lalu lanjut ke world DF target
+-- Tunggu hingga data tiles di world termuat sempurna (Main Door atau getTile valid)
+local function waitForWorldTiles(maxWaitMs)
+    local maxWait = maxWaitMs or 4000
+    local elapsed = 0
+    while elapsed < maxWait do
+        if not isPlayerOnlineInWorld() then return false end
+        local dx, dy = findMainDoor()
+        if dx and dy then return true end
+        safeSleep(250)
+        elapsed = elapsed + 250
+    end
+    local dx, dy = findMainDoor()
+    return (dx ~= nil and dy ~= nil)
+end
+
+-- Deteksi Disconnect & Auto-Reconnect: tidak pernah mematikan bot, tunggu login, re-warp, dan resume
 ensureOnlineInWorld = function(expectedWorld, expectedDoor)
-    local targetW = tostring(expectedWorld or STATE.active_world or ""):upper()
-    local targetD = tostring(expectedDoor or STATE.active_door or "")
+    local targetW = tostring(expectedWorld or STATE.active_world or ""):upper():gsub("%s+", "")
+    local targetD = tostring(expectedDoor or STATE.active_door or ""):gsub("%s+", "")
     local online, curW = isPlayerOnlineInWorld()
     if online and (targetW == "" or curW == targetW) then
         return true
@@ -2086,7 +2101,8 @@ ensureOnlineInWorld = function(expectedWorld, expectedDoor)
     local wasDisconnected = not online
     STATE.reconnecting = true
     if wasDisconnected then
-        setStatus("Menunggu Online", "Disconnect terdeteksi! Auto Reconnect aktif, menunggu online lalu run ulang DF...")
+        setStatus("Menunggu Reconnect", "Disconnect terdeteksi! Menunggu login kembali...")
+        addLog("[Auto-Reconnect] Terputus dari server. Menunggu login kembali...")
     end
     applyCheatToggles()
 
@@ -2102,17 +2118,15 @@ ensureOnlineInWorld = function(expectedWorld, expectedDoor)
         local nowOnline, nowW = isPlayerOnlineInWorld()
         if nowOnline then
             if targetW ~= "" and nowW ~= targetW then
-                setStatus("Auto Reconnect", "Kembali online! Masuk lagi ke " .. targetW .. " & mengulang scan DF...")
+                setStatus("Auto Reconnect", "Kembali online! Masuk lagi ke " .. targetW .. "...")
+                addLog("[Auto-Reconnect] Berhasil online! Menuju world target: " .. targetW)
                 if warpTo(targetW, targetD) then
-                    safeSleep(900)
+                    safeSleep(800)
+                    waitForWorldTiles(4000)
                     STATE.reconnecting = false
+                    STATE.current_world = targetW
                     applyCheatToggles()
-                    if wasDisconnected then
-                        STATE.reconnected_restart = true
-                        STATE.resume_world_override = targetW
-                        STATE.resume_door_override = targetD
-                        return false
-                    end
+                    addLog("[Auto-Reconnect] Siap melanjutkan pekerjaan di " .. targetW .. "!")
                     return true
                 end
             else
@@ -2120,19 +2134,12 @@ ensureOnlineInWorld = function(expectedWorld, expectedDoor)
                 STATE.reconnecting = false
                 STATE.current_world = nowW
                 applyCheatToggles()
-                addLog("Kembali Online di " .. nowW .. "!")
-                if wasDisconnected then
-                    STATE.reconnected_restart = true
-                    STATE.resume_world_override = (targetW ~= "") and targetW or nowW
-                    STATE.resume_door_override = targetD
-                    return false
-                end
+                addLog("[Auto-Reconnect] Kembali online di world " .. nowW .. "!")
                 return true
             end
         elseif targetW ~= "" and getLocal then
             local okP, p = pcall(getLocal)
             if okP and p and (ticks % 3 == 0) then
-                -- Coba join balik jika sudah login di Title Screen (EXIT)
                 local targetStr = (targetD ~= "") and (targetW .. "|" .. targetD) or targetW
                 pcall(sendPacket, 3, "action|join_request\nname|" .. targetStr .. "\ninvitedWorld|0\n")
             end
@@ -4357,22 +4364,31 @@ end
 -- ============================================================================
 
 local function generateRandomWorldName(length, useNumbers)
+    pcall(function() math.randomseed(os.time() + (getTime and getTime() or 0) + math.random(1, 999999)) end)
+    local len = math.max(4, math.min(12, tonumber(length) or 6))
     local chars = useNumbers and "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" or "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     local res = {}
-    for i = 1, length do
+    for i = 1, len do
         local idx = math.random(1, #chars)
         res[i] = chars:sub(idx, idx)
     end
-    return table.concat(res)
+    return table.concat(res):upper()
 end
 
 local function isCurrentWorldUsableForRandom()
     local ok, tiles = pcall(getTiles)
-    if not ok or not tiles then return false, "Tile belum termuat" end
+    if not ok or not tiles then
+        local dx, dy = findMainDoor()
+        if not dx or not dy then
+            return false, "Tile belum termuat"
+        end
+    end
 
-    for _, t in pairs(tiles) do
-        if t and OTHER_LOCKS[t.fg] then
-            return false, "Sudah ada Lock (" .. resolveItemName(t.fg) .. ")"
+    if tiles then
+        for _, t in pairs(tiles) do
+            if t and OTHER_LOCKS[t.fg] then
+                return false, "Sudah ada Lock (" .. resolveItemName(t.fg) .. ")"
+            end
         end
     end
 
@@ -4392,6 +4408,38 @@ local function isCurrentWorldUsableForRandom()
     end
 
     return true, "World kosong & siap dibuat DF"
+end
+
+-- Helper cepat khusus scan kandidat random world: warp 1x, tunggu tiles, cek kelayakan
+local function quickScanCandidateWorld(candidate)
+    if not candidate or candidate == "" then return false, "Nama world kosong" end
+    candidate = candidate:upper():gsub("%s+", "")
+
+    -- Kirim join request 1x
+    sendPacket(3, "action|join_request\nname|" .. candidate .. "\ninvitedWorld|0\n")
+
+    -- Tunggu hingga player masuk ke candidate (maks 2800ms)
+    local arrived = false
+    for _ = 1, 14 do
+        safeSleep(200)
+        if getWorldNameSafe() == candidate then
+            arrived = true
+            break
+        end
+    end
+    if not arrived then
+        return false, "Gagal masuk world (inaccessible/locked/timeout)"
+    end
+
+    -- Tunggu tile termuat (maks 4000ms)
+    local tilesOk = waitForWorldTiles(4000)
+    if not tilesOk then
+        return false, "Tile belum termuat setelah warp"
+    end
+
+    -- Cek kelayakan world
+    local usable, reason = isCurrentWorldUsableForRandom()
+    return usable, reason
 end
 
 local function readGLString(alias, fallback)
@@ -4578,7 +4626,7 @@ end
 local function acquireTargetWorld()
     syncInputsFromGL()
 
-    -- Setelah Auto Reconnect dari disconnect, langsung masuk ulang world terakhir agar proses DF dijalankan ulang dari awal
+    -- Setelah Reconnect dari disconnect, prioritaskan kembali ke world yang sedang dikerjakan
     if STATE.resume_world_override and STATE.resume_world_override ~= "" then
         local rw = STATE.resume_world_override
         local rd = STATE.resume_door_override or ""
@@ -4588,13 +4636,14 @@ local function acquireTargetWorld()
         STATE.active_door = rd
         local mIdx = nil
         for idx, entry in ipairs(CFG.world_list) do
-            if entry.name == rw and (not entry.done) then
+            if entry.name:upper() == rw:upper() and (not entry.done) then
                 mIdx = idx
                 break
             end
         end
         if getWorldNameSafe() ~= rw then
             warpTo(rw, rd)
+            waitForWorldTiles(4000)
             safeSleep(800)
         end
         return rw, rd, mIdx
@@ -4603,7 +4652,7 @@ local function acquireTargetWorld()
     if CFG.world_mode == "manual" then
         local hasPending = false
         for _, entry in ipairs(CFG.world_list) do
-            if not entry.done then
+            if not entry.done and entry.status ~= "DONE" then
                 hasPending = true
                 break
             end
@@ -4623,7 +4672,8 @@ local function acquireTargetWorld()
         end
 
         for idx, entry in ipairs(CFG.world_list) do
-            if not entry.done then
+            if not entry.done and entry.status ~= "DONE" then
+                entry.status = "PROSES"
                 STATE.active_world = entry.name
                 STATE.active_door = entry.door or ""
                 setStatus("Masuk World", "Menuju " .. entry.name)
@@ -4632,7 +4682,9 @@ local function acquireTargetWorld()
                         return nil, nil, nil
                     end
                 end
-                safeSleep(1000)
+                waitForWorldTiles(4000)
+                safeSleep(800)
+                if updateWorldDisplayList then pcall(updateWorldDisplayList) end
                 return entry.name, entry.door, idx
             end
         end
@@ -4646,29 +4698,25 @@ local function acquireTargetWorld()
         if sendNotification then pcall(sendNotification, msg) end
         return nil, nil, nil
     else
-        -- VALIDASI UTAMA: Jika ada world di list yang belum DONE atau masih ANTRI,
-        -- bot HARUS menyelesaikan world tersebut terlebih dahulu sebelum diizinkan mencari world secara random!
+        -- MODE RANDOM:
+        -- 1. Selesaikan world yang statusnya masih 'PROSES' (misal sempat pause / reconnect)
         for idx, entry in ipairs(CFG.world_list) do
-            if not entry.done and entry.status ~= "DONE" then
-                entry.status = "PROSES"
+            if (not entry.done) and entry.status == "PROSES" then
                 STATE.active_world = entry.name
                 STATE.active_door = entry.door or ""
-                if updateWorldDisplayList then pcall(updateWorldDisplayList) end
-                local isRand = false
-                pcall(function() isRand = (entry.from_random == true) end)
-                local srcTag = isRand and "Random Sebelumnya" or "Antrean List"
-                setStatus("Lanjut Antrean World", string.format("%s (%s - Selesaikan antrean)", entry.name, srcTag))
-                addLog(string.format("[Validasi Antrean] Menyelesaikan %s dari list terlebih dahulu sebelum mencari random baru", entry.name))
+                setStatus("Lanjut World", string.format("Melanjutkan %s (PROSES)", entry.name))
                 if not warpTo(entry.name, entry.door) then
                     if not ensureOnlineInWorld(entry.name, entry.door) then
                         return nil, nil, nil
                     end
                 end
-                safeSleep(1000)
+                waitForWorldTiles(4000)
+                safeSleep(800)
                 return entry.name, entry.door, idx
             end
         end
 
+        -- 2. Cek apakah target random sudah tercapai
         local targetCount = math.max(1, math.floor(tonumber(CFG.random_target_count) or 5))
         if (STATE.random_done_count or 0) >= targetCount then
             local doneMsg = string.format("Target Find Random selesai (%d/%d world DONE)!", STATE.random_done_count, targetCount)
@@ -4680,48 +4728,54 @@ local function acquireTargetWorld()
             return nil, nil, nil
         end
 
+        -- 3. Cari world kosong baru via Find Random World scanner
         local attempt = 0
-        while STATE.running and attempt < 30 do
+        local maxAttempts = 60
+        addLog(string.format("[Find World] Memulai pencarian world kosong (Target: %d/%d)...", (STATE.random_done_count or 0) + 1, targetCount))
+
+        while STATE.running and attempt < maxAttempts do
             if not waitIfPaused() then return nil, nil, nil end
             attempt = attempt + 1
             local candidate = generateRandomWorldName(CFG.random_length, CFG.random_use_numbers)
-            setStatus("Find Random World", string.format("Cek #%d: %s (Target %d/%d)", attempt, candidate, (STATE.random_done_count or 0) + 1, targetCount))
-            if warpTo(candidate, "") then
-                safeSleep(1200)
-                local usable, reason = isCurrentWorldUsableForRandom()
-                if usable then
-                    addLog("Ditemukan World: " .. candidate .. " (" .. reason .. ") -> Disimpan ke List!")
-                    local newDoor = (CFG.use_id_door and CFG.door_id ~= "") and CFG.door_id or ""
-                    local listIdx = nil
-                    for idx, existing in ipairs(CFG.world_list) do
-                        if existing.name == candidate then
-                            existing.door = newDoor
-                            existing.done = false
-                            existing.status = "PROSES"
-                            existing.from_random = true
-                            listIdx = idx
-                            break
-                        end
-                    end
-                    if not listIdx then
-                        table.insert(CFG.world_list, {
-                            name = candidate,
-                            door = newDoor,
-                            done = false,
-                            status = "PROSES",
-                            from_random = true,
-                        })
-                        listIdx = #CFG.world_list
-                    end
-                    persistConfig()
-                    if updateWorldDisplayList then pcall(updateWorldDisplayList) end
-                    return candidate, newDoor, listIdx
-                else
-                    addLog("Skip " .. candidate .. ": " .. reason)
+
+            -- Cek apakah kandidat sudah pernah ada di list
+            local alreadyInList = false
+            for _, w in ipairs(CFG.world_list) do
+                if w.name:upper() == candidate:upper() then
+                    alreadyInList = true
+                    break
                 end
             end
+
+            if not alreadyInList then
+                setStatus("Find Random World", string.format("Cek #%d/%d: %s (Target %d/%d)", attempt, maxAttempts, candidate, (STATE.random_done_count or 0) + 1, targetCount))
+                local usable, reason = quickScanCandidateWorld(candidate)
+                if usable then
+                    addLog(string.format("`2[Find World Sukses] `wDitemukan World Kosong: %s (%s) -> Siap dibuat DF!", candidate, reason))
+                    local newDoor = (CFG.use_id_door and CFG.door_id ~= "") and CFG.door_id or ""
+                    table.insert(CFG.world_list, {
+                        name = candidate,
+                        door = newDoor,
+                        done = false,
+                        status = "PROSES",
+                        from_random = true,
+                    })
+                    local listIdx = #CFG.world_list
+                    STATE.active_world = candidate
+                    STATE.active_door = newDoor
+                    persistConfig()
+                    if updateWorldDisplayList then pcall(updateWorldDisplayList) end
+                    safeSleep(600)
+                    return candidate, newDoor, listIdx
+                else
+                    addLog(string.format("[Skip #%d] %s: %s", attempt, candidate, reason))
+                end
+            end
+            safeSleep(300)
         end
-        setStatus("Gagal Find World", "Tidak menemukan world kosong setelah 30 percobaan.")
+
+        setStatus("Gagal Find World", string.format("Belum menemukan world kosong setelah %d percobaan.", maxAttempts))
+        addLog(string.format("[Find World] Selesai %d percobaan tanpa menemukan world kosong baru.", maxAttempts))
         return nil, nil, nil
     end
 end
@@ -5938,12 +5992,12 @@ local function inspectFullDFLayout(doorX, doorY)
             end
         end
     end
-    if CFG.break_lava or CFG.break_rock then
+    if CFG.break_lava then
         for y = 24, 52, 2 do
             for x = rowMinX, rowMaxX do
                 if not isInSecurityMoat(x, y, doorX, doorY) then
                     local ok, t = pcall(getTile, x, y)
-                    if ok and isTileClearableByBot(t) and ((t.fg == ITEM.LAVA and CFG.break_lava) or (t.fg == ITEM.ROCK and CFG.break_rock)) then
+                    if ok and isTileClearableByBot(t) and t.fg == ITEM.LAVA then
                         breakLeft = breakLeft + 1
                     end
                 end
@@ -5958,12 +6012,65 @@ local function inspectFullDFLayout(doorX, doorY)
     return breakLeft, platHoles
 end
 
+-- Helper Utama: Validasi apakah sebuah world sudah 100% SELESAI menjadi Dirt Farm
+local function isDFWorldCompleted(doorX, doorY)
+    if not doorX or not doorY then
+        local dx, dy = findMainDoor()
+        if dx and dy then doorX, doorY = dx, dy end
+    end
+    if not doorX or not doorY then return false end
+
+    -- 1. Validasi Kunci / Security (jika ignore_lock = false)
+    if not CFG.ignore_lock then
+        local sec = inspectWorldSecurityState(doorX, doorY)
+        if CFG.use_wl and not sec.has_wl then return false end
+        if CFG.use_sl and not sec.has_sl then return false end
+        if CFG.use_jammer and not sec.has_jammer then return false end
+    end
+
+    -- 2. Validasi Baris Ganjil Clear (y = 25..53 step 2)
+    local rowMinX, rowMaxX = getDFRowBounds()
+    for y = 25, 53, 2 do
+        for x = rowMinX, rowMaxX do
+            if isOddTileClearNeeded(x, y, doorX, doorY) then
+                return false
+            end
+        end
+    end
+
+    -- 3. Validasi Kolom Pinggir Clear (jika clear_sides aktif)
+    local sideCols = getSideColumns()
+    for _, colX in ipairs(sideCols) do
+        for y = 24, 53 do
+            if (not isProtectedEnclosure(colX, y, doorX, doorY)) and (not isEdgePlatformTile(colX, y, doorX, doorY)) then
+                local ok, t = pcall(getTile, colX, y)
+                if ok and isTileClearableByBot(t) and (t.fg ~= 0 or (CFG.break_cave_bg and t.bg ~= 0)) then
+                    return false
+                end
+            end
+        end
+    end
+
+    -- 4. Validasi Platform Genap (y = 24..52 step 2): pastikan 0 platform bolong
+    local holes = countMissingDirtPlatforms(doorX, doorY)
+    if holes > 0 then
+        return false
+    end
+
+    return true
+end
+
 -- Stage E: Deteksi penuh apakah layout DF sudah lengkap (clear bersih + bebas block penghalang + semua platform ter-put)
 local function validateAndRepairFullDFLayout(worldName, activeDoorID, doorX, doorY)
     for cycle = 1, 3 do
+        if isDFWorldCompleted(doorX, doorY) then
+            addLog("Deteksi Layout DF OK: Semua baris DF bersih & platform lengkap (0 bolong)!")
+            return true
+        end
+
         local breakLeft, platHoles = inspectFullDFLayout(doorX, doorY)
         if breakLeft == 0 and platHoles == 0 then
-            addLog("Deteksi Layout DF OK: Semua break bersih (0 sisa) & semua line DF simetris (0 bolong)!")
+            addLog("Deteksi Layout DF OK: Semua break bersih & platform rapi!")
             return true
         end
 
@@ -5971,7 +6078,7 @@ local function validateAndRepairFullDFLayout(worldName, activeDoorID, doorX, doo
         setStatus("Deteksi Layout DF", string.format("Cycle %d | Break/Penghalang: %d | Tambal DF: %d", cycle, breakLeft, platHoles))
 
         if breakLeft > 0 then
-            if not sweepRemainingBreakTiles(worldName, activeDoorID, doorX, doorY, (CFG.break_lava or CFG.break_rock), true) then
+            if not sweepRemainingBreakTiles(worldName, activeDoorID, doorX, doorY, CFG.break_lava, true) then
                 return false
             end
             if not sweepLineObstructions(worldName, activeDoorID, doorX, doorY) then
@@ -5984,7 +6091,7 @@ local function validateAndRepairFullDFLayout(worldName, activeDoorID, doorX, doo
             end
         end
     end
-    return true
+    return isDFWorldCompleted(doorX, doorY)
 end
 
 -- ============================================================================
@@ -6003,16 +6110,18 @@ local function processSingleWorld()
     STATE.active_door = worldDoor or ""
     STATE.df_dropped_spots = {}
     if manualIdx and CFG.world_list[manualIdx] then
-        CFG.world_list[manualIdx].done = false
         CFG.world_list[manualIdx].status = "PROSES"
         if updateWorldDisplayList then pcall(updateWorldDisplayList) end
     end
-    applyCheatToggles()
-    safeSleep(800)
 
     local doorX, doorY = findMainDoor()
     if not doorX or not doorY then
-        setStatus("Error Main Door", "Main Door tidak ditemukan di world " .. worldName)
+        -- Coba tunggu tile jika baru masuk world
+        waitForWorldTiles(4000)
+        doorX, doorY = findMainDoor()
+    end
+    if not doorX or not doorY then
+        setStatus("Error World", "Main Door tidak ditemukan di world " .. worldName)
         return false
     end
 
@@ -6055,11 +6164,11 @@ local function processSingleWorld()
         if updateWorldDisplayList then pcall(updateWorldDisplayList) end
     end
 
-    -- 3. Cek penuh apakah layout DF sudah lengkap (Lock lengkap + break bersih + 0 platform bolong); jika belum, clear, build & repair!
-    local initBreakLeft, initPlatHoles = inspectFullDFLayout(doorX, doorY)
-    if secState.all_ready and initBreakLeft == 0 and initPlatHoles == 0 then
-        addLog("Cek Status World: " .. worldName .. " sudah selesai penuh (0 bolong, 0 sisa) -> Status DONE!")
+    -- 3. Cek apakah world ini SUDAH 100% selesai menjadi Dirt Farm
+    if isDFWorldCompleted(doorX, doorY) then
+        addLog("`2[Validasi DONE] `wWorld " .. worldName .. " sudah 100% SELESAI DF (Clear bersih & Platform rapi)! Melewati clearing...")
     else
+        -- Jalankan alur clearing, platform building, dan repair
         if not clearWorldDirtFarm(worldName, activeDoorID, doorX, doorY) then
             return false
         end
@@ -6071,32 +6180,30 @@ local function processSingleWorld()
         end
     end
 
-    -- 5. Setelah DF terbentuk semua & ter-place: ambil cadangan seed di DF (bila ada) lalu simpan ke World Storage Seed!
+    -- 4. Simpan sisa Seed/Item ke Storage (jika diatur)
     if CFG.storage_seed_world ~= "" or (#(CFG.storage_seed_list or {}) > 0) then
-        for _ = 1, 4 do
-            collectBackupDropsFromDF(nil)
-            saveSeedsToStorage(worldName, activeDoorID, true)
-            if not hasAnyDroppedBackupInDF() then
-                break
-            end
-        end
-    else
+        collectBackupDropsFromDF(nil)
         saveSeedsToStorage(worldName, activeDoorID, true)
     end
 
-    if STATE.reconnected_restart then
-        return false
-    end
-
+    -- 5. Tandai World sebagai DONE di config & list
     local wasRandom = (CFG.world_mode == "random")
-    if manualIdx and CFG.world_list[manualIdx] then
+    local foundInList = false
+    for idx, w in ipairs(CFG.world_list) do
+        if w.name:upper() == worldName:upper() then
+            w.done = true
+            w.status = "DONE"
+            if w.from_random then wasRandom = true end
+            foundInList = true
+            break
+        end
+    end
+    if not foundInList and manualIdx and CFG.world_list[manualIdx] then
         CFG.world_list[manualIdx].done = true
         CFG.world_list[manualIdx].status = "DONE"
-        if CFG.world_list[manualIdx].from_random then
-            wasRandom = true
-        end
-        persistConfig()
     end
+    persistConfig()
+
     if wasRandom then
         STATE.random_done_count = (STATE.random_done_count or 0) + 1
     end
@@ -6105,7 +6212,8 @@ local function processSingleWorld()
     STATE.active_world = ""
     STATE.active_door = ""
     if updateWorldDisplayList then pcall(updateWorldDisplayList) end
-    setStatus("World Selesai!", string.format("DF %s selesai! (Total: %d)", worldName, STATE.worlds_completed))
+    setStatus("World Selesai!", string.format("DF %s SELESAI! (Total: %d)", worldName, STATE.worlds_completed))
+    addLog(string.format("`2[DONE] `wWorld %s selesai penuh! (Total selesai: %d)", worldName, STATE.worlds_completed))
     if sendNotification then
         pcall(sendNotification, "DF Selesai: " .. worldName)
     end
@@ -6129,35 +6237,29 @@ local function startAutoDF()
 
         while STATE.running do
             local ok, res = pcall(processSingleWorld)
+            if not STATE.running then break end
+
             if ok and res then
-                STATE.reconnected_restart = false
                 STATE.resume_world_override = nil
                 STATE.resume_door_override = nil
-            elseif (not ok) or (not res) then
-                if STATE.running and STATE.reconnected_restart then
-                    STATE.reconnected_restart = false
-                    setStatus("Auto-Restart DF", "Kembali online! Menjalankan ulang scan DF dari awal...")
-                    addLog("Auto Reconnect OK -> Run ulang DF otomatis agar tidak ada tile tertinggal!")
-                    safeSleep(900)
+                safeSleep(1500)
+            else
+                local isOnline, curW = isPlayerOnlineInWorld()
+                if (not isOnline) or curW == "EXIT" or curW == "" or STATE.reconnecting then
+                    addLog("[Disconnect] Terdeteksi player offline/EXIT di main loop! Menjalankan auto reconnect...")
+                    ensureOnlineInWorld(STATE.active_world, STATE.active_door)
+                    safeSleep(1000)
                 else
-                    local onlineNow = isPlayerOnlineInWorld()
-                    if STATE.running and CFG.auto_reconnect and ((not onlineNow) or STATE.reconnecting) then
-                        ensureOnlineInWorld(STATE.active_world, STATE.active_door)
-                        if STATE.reconnected_restart then
-                            STATE.reconnected_restart = false
-                            setStatus("Auto-Restart DF", "Kembali online! Menjalankan ulang scan DF dari awal...")
-                            addLog("Auto Reconnect OK -> Run ulang DF otomatis agar tidak ada tile tertinggal!")
-                            safeSleep(900)
-                        else
-                            STATE.running = false
-                            break
-                        end
-                    else
-                        if not ok then
-                            setStatus("Error", tostring(res))
-                        end
+                    if (not STATE.active_world) or STATE.active_world == "" then
+                        addLog("[Info] Semua antrean world selesai. Auto Dirt Farm selesai.")
+                        setStatus("Selesai", "Semua world telah selesai dikerjakan.")
                         STATE.running = false
                         break
+                    else
+                        if not ok then
+                            addLog("[Warning] Error saat proses world: " .. tostring(res))
+                        end
+                        safeSleep(2000)
                     end
                 end
             end
@@ -7142,13 +7244,21 @@ local function handleDFDialogReturn(pkt)
             DLG.showDFFindWorldDialog()
             return true
         elseif btn == "df_btn_generate_1_world" or pkt:find("buttonClicked|df_btn_generate_1_world", 1, true) then
+            local lenVal = getNum("df_in_find_len", CFG.random_length or 6)
+            if lenVal and lenVal >= 3 and lenVal <= 14 then
+                CFG.random_length = lenVal
+            end
+            local numVal = getVal("df_chk_find_num")
+            if numVal ~= "" then
+                CFG.random_use_numbers = (numVal:find("1") ~= nil)
+            end
             local rLen = tonumber(CFG.random_length) or 6
             local rNum = CFG.random_use_numbers
             local candidate = generateRandomWorldName(rLen, rNum)
             if candidate and candidate ~= "" then
                 local exists = false
                 for _, w in ipairs(CFG.world_list or {}) do
-                    if w.name == candidate then exists = true; break end
+                    if w.name:upper() == candidate:upper() then exists = true; break end
                 end
                 if not exists then
                     local dId = (CFG.use_id_door and CFG.door_id ~= "") and CFG.door_id or ""
@@ -7156,6 +7266,7 @@ local function handleDFDialogReturn(pkt)
                     persistConfig()
                     if updateWorldDisplayList then pcall(updateWorldDisplayList) end
                     if sendNotification then pcall(sendNotification, "World Random " .. candidate .. " ditambahkan!") end
+                    addLog("World Random " .. candidate .. " (Panjang: " .. rLen .. ") ditambahkan ke antrian!")
                 else
                     if sendNotification then pcall(sendNotification, candidate .. " sudah ada, coba lagi!") end
                 end
