@@ -888,9 +888,9 @@ updateFileInfoDisplayList = function()
     local okF, statusMsg = checkWorldFileStatus(fullPath)
     local dirDisplay = (dir ~= "") and dir or "(Folder Download / Game)"
     local rows = {
-        { "📁 Folder HP (Paten)", dirDisplay },
-        { "📄 File Backup", fn },
-        { "🔍 Status File", okF and ("`2[ADA] `w" .. statusMsg) or ("`4[BELUM DISIMPAN] `oKlik 'Simpan ke Download'") },
+        { " Folder HP (Paten)", dirDisplay },
+        { " File Backup", fn },
+        { " Status File", okF and ("`2[ADA] `w" .. statusMsg) or ("`4[BELUM DISIMPAN] `oKlik 'Simpan ke Download'") },
         { "Path Lengkap", fullPath }
     }
     pcall(editValue, "df_file_info_list", jsonEncode(rows))
@@ -1556,7 +1556,7 @@ local function moveSafeTo(tx, ty)
 
             local stepDist = math.max(math.abs(curX - stepX), math.abs(curY - stepY))
             local walkDelay = math.max(50, tonumber(CFG.delay_walk) or 160)
-            -- TELEPORT per hop dengan jeda SEBELUM teleport mengikuti slider "Delay Jalan" (jitter ±20%)
+            -- TELEPORT per hop dengan jeda SEBELUM teleport mengikuti slider "Delay Jalan" (jitter 20%)
             safeSleep(math.floor(walkDelay * (0.8 + math.random() * 0.4)))
             if not STATE.running then break end
             pcall(pFn, stepX, stepY)
@@ -1584,7 +1584,7 @@ local function moveSafeTo(tx, ty)
                     break
                 end
             end
-            -- Jeda SETELAH tiap teleport mengikuti slider "Delay Jalan" (walkDelay * 1.5, jitter ±20%)
+            -- Jeda SETELAH tiap teleport mengikuti slider "Delay Jalan" (walkDelay * 1.5, jitter 20%)
             safeSleep(math.floor(walkDelay * 1.5 * (0.8 + math.random() * 0.4)))
         end
     end
@@ -2698,7 +2698,7 @@ openFileBrowserManagerDialog = function()
         table.insert(dLines, string.format("add_textbox|`wFile .txt Ditemukan (%d file di folder ini):|left|", #files))
         for i, fInfo in ipairs(files) do
             local isCur = (fInfo.name == currentFn)
-            local icon = isCur and "`2▶ " or "`w"
+            local icon = isCur and "`2 " or "`w"
             table.insert(dLines, "add_spacer|small|")
             table.insert(dLines, string.format("add_textbox|%s%d. %s `o(%s)|left|", icon, i, fInfo.name, fInfo.info or ""))
             table.insert(dLines, string.format("add_button|boren_fpick_%d|`2Pilih & Load #%d|noflags|0|0|", i, i))
@@ -3994,7 +3994,7 @@ local function saveSeedsToStorage(returnWorld, returnDoor, forceAll)
     -- Poin 1:
     -- - Saat DF masih diproses (forceAll = false):
     --   * Cave Seed, Lava Seed, Rock Seed, Lava Block, dll langsung di-save ke Storage Seed sejak awal saat >= threshold.
-    --   * Khusus Dirt Seed & Dirt Block TIDAK dibawa ke Storage dulu — bila BP penuh (>= 200), di-drop di world DF dulu agar nanti diambil buat plant/place sampai DF selesai!
+    --   * Khusus Dirt Seed & Dirt Block TIDAK dibawa ke Storage dulu  bila BP penuh (>= 200), di-drop di world DF dulu agar nanti diambil buat plant/place sampai DF selesai!
     -- - Setelah semua DF selesai (forceAll = true): seluruh sisa seed termasuk Dirt Seed ikut di-save ke Storage Seed.
     local storageBatch = {}
     local dfBackupBatch = {}
@@ -6474,6 +6474,420 @@ local function createNativeUI(subName, iconName)
     return ui
 end
 
+
+do -- SC DIRT FARM COMPACT DIALOG BLOCK (scoped to avoid 200-local limit)
+-- ============================================================================
+-- SC DIRT FARM - COMPACT MODULAR DIALOG (triggered by /df in chat)
+-- 100% Pure ASCII, 5-8 lines max, no vertical scrollbar
+-- ============================================================================
+
+local function showClientDialog(dText)
+    local ok1 = pcall(sendVariant, { v1 = "OnDialogRequest", v2 = dText })
+    if ok1 then return end
+    local ok2 = pcall(sendVariant, { [1] = "OnDialogRequest", [2] = dText })
+    if ok2 then return end
+    if growtopia and growtopia.sendDialog then pcall(growtopia.sendDialog, dText)
+    elseif sendDialog then pcall(sendDialog, dText) end
+end
+
+local function showDFMainDialog()
+    local curW = getWorldNameSafe()
+    if curW == "" then curW = "EXIT" end
+    local isRun = STATE.running
+    local stBadge = isRun and "`2(Running)" or "`4(Stopped)"
+    local wCount = #(CFG.world_list or {})
+    local toolCount = #(CFG.storage_tool_list or {})
+    local seedCount = #(CFG.storage_seed_list or {})
+    local doneCount = tonumber(STATE.worlds_completed) or 0
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wBoren Auto Dirt Farm``|left|8|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wStatus: %s `p- `wWorld: `b%s|left|", stBadge, curW),
+        string.format("add_textbox|`wQueue: `2(%d World) `p- `wDone: `2(%d)|left|", wCount, doneCount),
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|",
+    }
+    if not isRun then
+        lines[#lines+1] = "add_button|df_btn_dlg_start|`wStart Auto DF `2(Ready)|noflags|0|0|"
+    else
+        lines[#lines+1] = "add_button|df_btn_dlg_stop|`wStop Auto DF `4(Active)|noflags|0|0|"
+    end
+    lines[#lines+1] = string.format("add_button|df_btn_dlg_add_cur|`wAdd World `2(%s)|noflags|0|0|", curW)
+    lines[#lines+1] = "add_spacer|small|"
+    lines[#lines+1] = string.format("add_button|df_btn_dlg_worlds|`wSetting World Farm `2(%d World)|noflags|0|0|", wCount)
+    lines[#lines+1] = string.format("add_button|df_btn_dlg_storage|`wSetting Storage `2(%d Tool, %d Seed)|noflags|0|0|", toolCount, seedCount)
+    lines[#lines+1] = "add_button|df_btn_dlg_lock|`wLock & Door Config|noflags|0|0|"
+    lines[#lines+1] = "add_button|df_btn_dlg_settings|`wPengaturan DF|noflags|0|0|"
+    lines[#lines+1] = "add_button|df_btn_dlg_logs|`wLog Activity|noflags|0|0|"
+    lines[#lines+1] = "add_spacer|small|"
+    lines[#lines+1] = "add_button|df_btn_dlg_close|`wClose|noflags|0|0|"
+    lines[#lines+1] = "end_dialog|df_main|Close||"
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+local function showDFWorldsDialog()
+    local wCount = #(CFG.world_list or {})
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wSetting World Farm``|left|2|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wTotal Queue: `2(%d World)|left|", wCount),
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|",
+        "add_text_input|df_in_world_name|World Name| |24|",
+        "add_text_input|df_in_door_id|Door ID (Optional)| |16|",
+        "add_spacer|small|",
+        "add_button|df_btn_dlg_do_add_world|`wTambah ke Queue|noflags|0|0|",
+        "add_button|df_btn_dlg_reset_queue|`wReset Status Queue|noflags|0|0|",
+    }
+    if wCount > 0 then
+        lines[#lines+1] = "add_spacer|small|"
+        lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
+        for i = 1, math.min(8, wCount) do
+            local w = CFG.world_list[i]
+            local dStr = (w.door and w.door ~= "") and string.format(":%s", w.door) or ""
+            local tag = (w.status == "DONE") and " `2[DONE]" or ((w.status == "PROSES") and " `e[PROSES]" or " `p[ANTRI]")
+            lines[#lines+1] = string.format("add_textbox|`p#%d `w%s%s%s|left|", i, w.name, dStr, tag)
+        end
+        if wCount > 8 then
+            lines[#lines+1] = string.format("add_textbox|`p... dan %d world lainnya|left|", wCount - 8)
+        end
+        lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
+    end
+    lines[#lines+1] = "add_spacer|small|"
+    lines[#lines+1] = "add_button|df_btn_dlg_back_main|`wBack|noflags|0|0|"
+    lines[#lines+1] = "end_dialog|df_worlds|Close||"
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+local function showDFStorageDialog()
+    local toolCount = #(CFG.storage_tool_list or {})
+    local seedCount = #(CFG.storage_seed_list or {})
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wSetting Storage``|left|32|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wGudang Alat: `2(%d) `p- `wGudang Seed: `2(%d)|left|", toolCount, seedCount),
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|",
+        "add_textbox|`wGudang Alat (WL/SL/Jammer/Door):|left|",
+        "add_text_input|df_in_tool_world|World Gudang Alat| |24|",
+        "add_button|df_btn_dlg_add_tool|`wTambah Gudang Alat|noflags|0|0|",
+        "add_button|df_btn_dlg_clear_tool|`wKosongkan Gudang Alat `4(Reset)|noflags|0|0|",
+        "add_spacer|small|",
+        "add_textbox|`wGudang Seed (Dirt/Cave/Rock/Lava):|left|",
+        "add_text_input|df_in_seed_world|World Gudang Seed| |24|",
+        "add_button|df_btn_dlg_add_seed|`wTambah Gudang Seed|noflags|0|0|",
+        "add_button|df_btn_dlg_clear_seed|`wKosongkan Gudang Seed `4(Reset)|noflags|0|0|",
+        "add_spacer|small|",
+        "add_button|df_btn_dlg_back_main|`wBack|noflags|0|0|",
+        "end_dialog|df_storage|Close||"
+    }
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+local function showDFLockDialog()
+    local ignBadge = CFG.ignore_lock and "`2(ON)" or "`4(OFF)"
+    local wlBadge = CFG.use_wl and "`2(ON)" or "`4(OFF)"
+    local slBadge = CFG.use_sl and "`2(ON)" or "`4(OFF)"
+    local jamBadge = CFG.use_jammer and "`2(ON)" or "`4(OFF)"
+    local doorBadge = CFG.use_id_door and "`2(ON)" or "`4(OFF)"
+    local blkBadge = CFG.use_blocker_door and "`2(ON)" or "`4(OFF)"
+    local idDoorName = resolveItemName(CFG.id_door_itemid or 12)
+    local blkName = resolveItemName(CFG.blocker_door_itemid or 2810)
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wLock & Door Config``|left|8|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wIgnore: %s `p- `wWL: %s `p- `wSL: %s `p- `wJam: %s|left|", ignBadge, wlBadge, slBadge, jamBadge),
+        string.format("add_textbox|`wDoor ID: %s `p- `wBlocker: %s|left|", doorBadge, blkBadge),
+        string.format("add_textbox|`wDoor Item: `b%s `2(#%d)|left|", idDoorName, CFG.id_door_itemid or 12),
+        string.format("add_textbox|`wBlocker: `b%s `2(#%d)|left|", blkName, CFG.blocker_door_itemid or 2810),
+        string.format("add_textbox|`wTarget ID: `b%s `p- `wLabel: `b%s|left|", tostring(CFG.door_id or "DF123"), tostring(CFG.door_label or "BOREN STORE")),
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|",
+        string.format("add_checkbox|df_dlg_ignore_lock|Ignore Lock (Bukan Owner)|%d|", CFG.ignore_lock and 1 or 0),
+        string.format("add_checkbox|df_dlg_use_wl|World Lock (WL) Public|%d|", (CFG.use_wl and CFG.wl_public) and 1 or 0),
+        string.format("add_checkbox|df_dlg_use_sl|Small Lock (SL) Private|%d|", CFG.use_sl and 1 or 0),
+        string.format("add_checkbox|df_dlg_use_jammer|Signal Jammer|%d|", CFG.use_jammer and 1 or 0),
+        string.format("add_checkbox|df_dlg_use_id_door|Door ID di (0,0)|%d|", CFG.use_id_door and 1 or 0),
+        string.format("add_checkbox|df_dlg_use_blocker|Penghalang Kiri (Blocker)|%d|", CFG.use_blocker_door and 1 or 0),
+        "add_spacer|small|",
+        string.format("add_text_input|df_dlg_door_id|Door ID Target World|%s|16|", tostring(CFG.door_id or "DF123")),
+        string.format("add_text_input|df_dlg_door_label|Door Label|%s|20|", tostring(CFG.door_label or "BOREN STORE")),
+        string.format("add_text_input|df_dlg_id_door_itemid|Door Item ID (Number)|%s|8|", tostring(CFG.id_door_itemid or 12)),
+        string.format("add_text_input|df_dlg_blocker_itemid|Blocker Item ID (Number)|%s|8|", tostring(CFG.blocker_door_itemid or 2810)),
+        "add_spacer|small|",
+        "add_button|df_btn_dlg_save_lock|`wSave Lock Config|noflags|0|0|",
+        "add_button|df_btn_dlg_back_main|`wBack|noflags|0|0|",
+        "end_dialog|df_lock|Close||"
+    }
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+local function showDFSettingsDialog()
+    local flyBadge = CFG.use_modfly and "`2(ON)" or "`4(OFF)"
+    local lavaAntiBadge = CFG.use_anti_lava and "`2(ON)" or "`4(OFF)"
+    local collectBadge = CFG.auto_collect and "`2(ON)" or "`4(OFF)"
+    local farmBadge = CFG.auto_farm_dirt and "`2(ON)" or "`4(OFF)"
+    local upperBadge = CFG.build_upper and "`2(ON)" or "`4(OFF)"
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wPengaturan DF``|left|32|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wModFly: %s `p- `wAnti-Lava: %s `p- `wCollect: %s|left|", flyBadge, lavaAntiBadge, collectBadge),
+        string.format("add_textbox|`wAuto Tanam: %s `p- `wSusun Atas: %s|left|", farmBadge, upperBadge),
+        string.format("add_textbox|`wDelay Break: `2(%dms) `p- `wPlace: `2(%dms)|left|", CFG.delay_break, CFG.delay_place),
+        string.format("add_textbox|`wDelay Walk: `2(%dms) `p- `wWarp: `2(%dms)|left|", CFG.delay_walk, CFG.delay_warp),
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|",
+        string.format("add_checkbox|df_dlg_modfly|ModFly Otomatis|%d|", CFG.use_modfly and 1 or 0),
+        string.format("add_checkbox|df_dlg_anti_lava|Anti-Lava|%d|", CFG.use_anti_lava and 1 or 0),
+        string.format("add_checkbox|df_dlg_auto_collect|Auto Collect|%d|", CFG.auto_collect and 1 or 0),
+        string.format("add_checkbox|df_dlg_auto_farm|Auto Tanam Dirt|%d|", CFG.auto_farm_dirt and 1 or 0),
+        string.format("add_checkbox|df_dlg_build_upper|Susun Dirt Atas (y=2-22)|%d|", CFG.build_upper and 1 or 0),
+        string.format("add_checkbox|df_dlg_break_cave|Break Cave BG|%d|", CFG.break_cave_bg and 1 or 0),
+        string.format("add_checkbox|df_dlg_break_lava|Break Lava|%d|", CFG.break_lava and 1 or 0),
+        string.format("add_checkbox|df_dlg_break_rock|Break Rock|%d|", CFG.break_rock and 1 or 0),
+        string.format("add_checkbox|df_dlg_clear_sides|Clear Pinggir|%d|", CFG.clear_sides and 1 or 0),
+        string.format("add_checkbox|df_dlg_auto_reconnect|Auto Reconnect|%d|", CFG.auto_reconnect and 1 or 0),
+        "add_spacer|small|",
+        "add_button|df_btn_dlg_save_settings|`wSave Settings|noflags|0|0|",
+        "add_button|df_btn_dlg_back_main|`wBack|noflags|0|0|",
+        "end_dialog|df_settings|Close||"
+    }
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+local function showDFLogsDialog()
+    local logs = STATE.logs or {}
+    local errCount = tonumber(STATE.error_count) or 0
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wLog Activity``|left|32|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wTotal Log: `2(%d) `p- `wError: `4(%d)|left|", #logs, errCount),
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|",
+    }
+    if #logs == 0 then
+        lines[#lines+1] = "add_textbox|`4(Empty) `wBelum ada log aktivitas.|left|"
+    else
+        for i = math.max(1, #logs - 7), #logs do
+            local cleanLog = tostring(logs[i] or ""):gsub("|", " "):sub(1, 55)
+            lines[#lines+1] = string.format("add_textbox|`o%s|left|", cleanLog)
+        end
+    end
+    lines[#lines+1] = "add_spacer|small|"
+    lines[#lines+1] = "add_button|df_btn_dlg_clear_logs|`wBersihkan Log|noflags|0|0|"
+    lines[#lines+1] = "add_button|df_btn_dlg_back_main|`wBack|noflags|0|0|"
+    lines[#lines+1] = "end_dialog|df_logs|Close||"
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+local function handleDFDialogReturn(pkt)
+    local dName = pkt:match("dialog_name|([^\n\r]+)") or ""
+    local function getVal(key)
+        return pkt:match(key .. "|([^\n\r|]+)") or ""
+    end
+
+    if dName == "df_main" then
+        local btn = getVal("buttonClicked")
+        if btn == "df_btn_dlg_start" then
+            if not STATE.running then startAutoDF() end
+        elseif btn == "df_btn_dlg_stop" then
+            STATE.running = false; STATE.paused = false
+            setStatus("Stopping", "Menghentikan bot...")
+            updatePowerStatusList()
+        elseif btn == "df_btn_dlg_add_cur" then
+            local cw = getWorldNameSafe()
+            if cw and cw ~= "" and cw ~= "EXIT" then
+                local exists = false
+                for _, w in ipairs(CFG.world_list or {}) do
+                    if w.name == cw then exists = true; break end
+                end
+                if not exists then
+                    table.insert(CFG.world_list, { name = cw, door = "", done = false, status = "ANTRI" })
+                    persistConfig()
+                    if updateWorldDisplayList then pcall(updateWorldDisplayList) end
+                    if sendNotification then pcall(sendNotification, "World " .. cw .. " ditambahkan!") end
+                else
+                    if sendNotification then pcall(sendNotification, cw .. " sudah ada di queue!") end
+                end
+            end
+            showDFMainDialog()
+        elseif btn == "df_btn_dlg_worlds" then showDFWorldsDialog()
+        elseif btn == "df_btn_dlg_storage" then showDFStorageDialog()
+        elseif btn == "df_btn_dlg_lock" then showDFLockDialog()
+        elseif btn == "df_btn_dlg_settings" then showDFSettingsDialog()
+        elseif btn == "df_btn_dlg_logs" then showDFLogsDialog()
+        end
+
+    elseif dName == "df_worlds" then
+        local btn = getVal("buttonClicked")
+        if btn == "df_btn_dlg_do_add_world" then
+            local wName = getVal("df_in_world_name"):upper():gsub("%s+", "")
+            local wDoor = getVal("df_in_door_id"):gsub("%s+", "")
+            if wName and wName ~= "" then
+                local exists = false
+                for _, w in ipairs(CFG.world_list or {}) do
+                    if w.name == wName then exists = true; break end
+                end
+                if not exists then
+                    table.insert(CFG.world_list, { name = wName, door = wDoor, done = false, status = "ANTRI" })
+                    persistConfig()
+                    if updateWorldDisplayList then pcall(updateWorldDisplayList) end
+                    if sendNotification then pcall(sendNotification, "World " .. wName .. " ditambahkan!") end
+                else
+                    if sendNotification then pcall(sendNotification, wName .. " sudah ada!") end
+                end
+            end
+            showDFWorldsDialog()
+        elseif btn == "df_btn_dlg_reset_queue" then
+            for _, w in ipairs(CFG.world_list or {}) do w.done = false; w.status = "ANTRI" end
+            persistConfig()
+            if updateWorldDisplayList then pcall(updateWorldDisplayList) end
+            if sendNotification then pcall(sendNotification, "Status queue di-reset!") end
+            showDFWorldsDialog()
+        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
+        end
+
+    elseif dName == "df_storage" then
+        local btn = getVal("buttonClicked")
+        if btn == "df_btn_dlg_add_tool" then
+            local wName = getVal("df_in_tool_world"):upper():gsub("%s+", "")
+            if wName ~= "" then
+                table.insert(CFG.storage_tool_list, { name = wName, door = "" })
+                persistConfig()
+                if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
+                if sendNotification then pcall(sendNotification, "Gudang Alat " .. wName .. " ditambahkan!") end
+            end
+            showDFStorageDialog()
+        elseif btn == "df_btn_dlg_clear_tool" then
+            CFG.storage_tool_list = {}
+            CFG.storage_pack_world = ""; CFG.storage_pack_door = ""
+            persistConfig()
+            if updateToolStorageDisplayList then pcall(updateToolStorageDisplayList) end
+            if sendNotification then pcall(sendNotification, "Gudang Alat dikosongkan!") end
+            showDFStorageDialog()
+        elseif btn == "df_btn_dlg_add_seed" then
+            local wName = getVal("df_in_seed_world"):upper():gsub("%s+", "")
+            if wName ~= "" then
+                table.insert(CFG.storage_seed_list, { name = wName, door = "" })
+                persistConfig()
+                if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
+                if sendNotification then pcall(sendNotification, "Gudang Seed " .. wName .. " ditambahkan!") end
+            end
+            showDFStorageDialog()
+        elseif btn == "df_btn_dlg_clear_seed" then
+            CFG.storage_seed_list = {}
+            CFG.storage_seed_world = ""; CFG.storage_seed_door = ""
+            persistConfig()
+            if updateSeedStorageDisplayList then pcall(updateSeedStorageDisplayList) end
+            if sendNotification then pcall(sendNotification, "Gudang Seed dikosongkan!") end
+            showDFStorageDialog()
+        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
+        end
+
+    elseif dName == "df_lock" then
+        local btn = getVal("buttonClicked")
+        if btn == "df_btn_dlg_save_lock" then
+            CFG.ignore_lock = (getVal("df_dlg_ignore_lock") == "1")
+            CFG.use_wl = (getVal("df_dlg_use_wl") == "1"); CFG.wl_public = CFG.use_wl
+            CFG.use_sl = (getVal("df_dlg_use_sl") == "1")
+            CFG.use_jammer = (getVal("df_dlg_use_jammer") == "1")
+            CFG.use_id_door = (getVal("df_dlg_use_id_door") == "1")
+            CFG.use_blocker_door = (getVal("df_dlg_use_blocker") == "1")
+            local ndi = getVal("df_dlg_door_id"):gsub("%s+", "")
+            if ndi ~= "" then CFG.door_id = ndi end
+            local ndl = getVal("df_dlg_door_label")
+            if ndl ~= "" then CFG.door_label = ndl end
+            local ndItem = tonumber(getVal("df_dlg_id_door_itemid"))
+            if ndItem and ndItem > 0 then CFG.id_door_itemid = ndItem end
+            local nbItem = tonumber(getVal("df_dlg_blocker_itemid"))
+            if nbItem and nbItem > 0 then CFG.blocker_door_itemid = nbItem end
+            persistConfig()
+            if sendNotification then pcall(sendNotification, "Lock config disimpan!") end
+            showDFLockDialog()
+        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
+        end
+
+    elseif dName == "df_settings" then
+        local btn = getVal("buttonClicked")
+        if btn == "df_btn_dlg_save_settings" then
+            CFG.use_modfly = (getVal("df_dlg_modfly") == "1")
+            CFG.use_anti_lava = (getVal("df_dlg_anti_lava") == "1")
+            CFG.auto_collect = (getVal("df_dlg_auto_collect") == "1")
+            CFG.auto_farm_dirt = (getVal("df_dlg_auto_farm") == "1")
+            CFG.build_upper = (getVal("df_dlg_build_upper") == "1")
+            CFG.break_cave_bg = (getVal("df_dlg_break_cave") == "1")
+            CFG.break_lava = (getVal("df_dlg_break_lava") == "1")
+            CFG.break_rock = (getVal("df_dlg_break_rock") == "1")
+            CFG.clear_sides = (getVal("df_dlg_clear_sides") == "1")
+            CFG.auto_reconnect = (getVal("df_dlg_auto_reconnect") == "1")
+            persistConfig()
+            if sendNotification then pcall(sendNotification, "Settings DF disimpan!") end
+            showDFSettingsDialog()
+        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
+        end
+
+    elseif dName == "df_logs" then
+        local btn = getVal("buttonClicked")
+        if btn == "df_btn_dlg_clear_logs" then
+            STATE.logs = {}; STATE.error_logs = {}; STATE.error_count = 0
+            if sendNotification then pcall(sendNotification, "Log dibersihkan!") end
+            showDFLogsDialog()
+        elseif btn == "df_btn_dlg_back_main" then showDFMainDialog()
+        end
+    end
+end
+
+-- Chat Command Hook (/df)
+ensureRuntimeHooks()
+local function onSendDFCommandHook(ptype, pkt)
+    if ptype ~= 2 then return end
+    local body = type(pkt) == "string" and pkt or ""
+    if body == "" then
+        local ok, s = pcall(tostring, pkt); if ok then body = s end
+    end
+    local cmd = body:match("action|input\r?\ntext|(/[^\r\n]+)") or body:match("text|(/[^\r\n]+)")
+    if cmd then
+        cmd = cmd:lower():gsub("%s+", "")
+        if cmd == "/df" or cmd == "/dirtfarm" or cmd == "/farm" then
+            showDFMainDialog()
+            return true
+        end
+    end
+    if body:match("action|dialog_return") then
+        local dn = body:match("dialog_name|([^\r\n]+)")
+        if dn and dn:sub(1, 3) == "df_" then
+            handleDFDialogReturn(body)
+            return true
+        end
+    end
+end
+if addHook then pcall(addHook, onSendDFCommandHook, "onsendpacket") end
+_G.onSendPacketDFDialog = onSendDFCommandHook
+
+if sendNotification then pcall(sendNotification, "SC Dirt Farm: Ketik /df di chat untuk menu!") end
+if LogToConsole then pcall(LogToConsole, "`2[SC DF Dialog] `wKetik `b/df `wdi chat untuk buka dialog!") end
+
+end -- end do block for SC DIRT FARM COMPACT DIALOG
+
+
 local function registerNativeBorenStoreUI()
     if not addCategory or not addIntoModule then return end
 
@@ -6481,12 +6895,12 @@ local function registerNativeBorenStoreUI()
     local uiWorld = createNativeUI("1. Start & World", "PlayArrow")
     uiWorld:addLabelApp("Boren Store - Auto DF", "Storefront")
     if uiWorld.addExpandableToggle and uiWorld.addChildButton and uiWorld.addChildToggle then
-        local runCard = uiWorld:addExpandableToggle("▶ START AUTO DF", false, "df_run_power", false, true)
-        uiWorld:addChildButton(runCard.list_child, "■ STOP AUTO DF", "df_btn_stop_df")
+        local runCard = uiWorld:addExpandableToggle(" START AUTO DF", false, "df_run_power", false, true)
+        uiWorld:addChildButton(runCard.list_child, " STOP AUTO DF", "df_btn_stop_df")
         uiWorld:addChildToggle(runCard.list_child, "Pause Bot", false, "df_pause_toggle")
     else
-        uiWorld:addToggleButton("▶ START / ■ STOP AUTO DF", false, "df_run_power")
-        uiWorld:addButton("■ STOP AUTO DF", "df_btn_stop_df")
+        uiWorld:addToggleButton(" START /  STOP AUTO DF", false, "df_run_power")
+        uiWorld:addButton(" STOP AUTO DF", "df_btn_stop_df")
         uiWorld:addToggle("Pause Bot", false, "df_pause_toggle", false)
     end
     uiWorld:addDisplayList("Status Bot", "Default", "df_power_status_list")
@@ -6496,13 +6910,13 @@ local function registerNativeBorenStoreUI()
     uiWorld:addInputString("Door ID (Opsional)", CFG.manual_door_text, "Door ID", "Kosong = White Door", "DoorFront", "df_manual_door_input")
     uiWorld:addButton("+ Tambah World ke Antrean", "df_btn_add_world")
     uiWorld:addButton("+ Pakai World Sekarang", "df_btn_add_cur_world")
-    uiWorld:addButton("📋 Kelola / Edit, Salin & Tempel World", "df_btn_view_worlds")
-    uiWorld:addButton("🗑️ Kosongkan Semua World", "df_btn_clear_worlds")
+    uiWorld:addButton(" Kelola / Edit, Salin & Tempel World", "df_btn_view_worlds")
+    uiWorld:addButton(" Kosongkan Semua World", "df_btn_clear_worlds")
     uiWorld:addDivider()
     uiWorld:addLabel("Cadangan File (Folder Download HP):")
     uiWorld:addDisplayList("Status File Download", "Default", "df_file_info_list")
-    uiWorld:addButton("📥 Simpan Antrean ke Download", "df_btn_save_worlds")
-    uiWorld:addButton("📤 Muat Antrean dari Download", "df_btn_load_worlds")
+    uiWorld:addButton(" Simpan Antrean ke Download", "df_btn_save_worlds")
+    uiWorld:addButton(" Muat Antrean dari Download", "df_btn_load_worlds")
     uiWorld:addDisplayList("List World DF", "Default", "df_world_display_list")
     uiWorld:addDivider()
     uiWorld:addLabel("Random World:")
@@ -6548,17 +6962,17 @@ local function registerNativeBorenStoreUI()
     uiStorage:addLabel("Ambil Alat (Lock/Door/Jammer):")
     uiStorage:addInputString("World Storage Alat", CFG.storage_pack_world, "World", "WORLDALAT", "Inventory", "df_pack_w")
     uiStorage:addInputString("Door Storage Alat", CFG.storage_pack_door, "Door", "DOOR123", "DoorFront", "df_pack_d")
-    uiStorage:addButton("➕ Tambah Gudang Alat", "df_btn_add_tool_direct")
-    uiStorage:addButton("📋 Kelola Gudang Alat", "df_btn_manage_tools")
-    uiStorage:addButton("🗑️ Kosongkan Gudang Alat", "df_btn_clear_tool_direct")
+    uiStorage:addButton(" Tambah Gudang Alat", "df_btn_add_tool_direct")
+    uiStorage:addButton(" Kelola Gudang Alat", "df_btn_manage_tools")
+    uiStorage:addButton(" Kosongkan Gudang Alat", "df_btn_clear_tool_direct")
     uiStorage:addDisplayList("Daftar Gudang Alat", "Default", "df_tool_storage_list")
     uiStorage:addDivider()
     uiStorage:addLabel("Simpan Seed:")
     uiStorage:addInputString("World Storage Seed", CFG.storage_seed_world, "World", "Kosong = drop di DF", "Grass", "df_seed_w")
     uiStorage:addInputString("Door Storage Seed", CFG.storage_seed_door, "Door", "SEED123", "DoorFront", "df_seed_d")
-    uiStorage:addButton("➕ Tambah Gudang Seed", "df_btn_add_seed_direct")
-    uiStorage:addButton("📋 Kelola Gudang Seed", "df_btn_manage_seeds")
-    uiStorage:addButton("🗑️ Kosongkan Gudang Seed", "df_btn_clear_seed_direct")
+    uiStorage:addButton(" Tambah Gudang Seed", "df_btn_add_seed_direct")
+    uiStorage:addButton(" Kelola Gudang Seed", "df_btn_manage_seeds")
+    uiStorage:addButton(" Kosongkan Gudang Seed", "df_btn_clear_seed_direct")
     uiStorage:addDisplayList("Daftar Gudang Seed", "Default", "df_seed_storage_list")
     uiStorage:addSlider("Simpan Saat >=", 50, 195, CFG.save_seed_threshold, 5, false, "df_seed_thresh")
     uiStorage:addTooltip("Info Seed", "Cave/Lava/Rock langsung disimpan. Dirt Seed disimpan setelah DF selesai.", "Info", false)
