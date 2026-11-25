@@ -1543,10 +1543,14 @@ end
 
 local function applyCheatToggles()
     if not editToggle then return end
-    if CFG.use_modfly then
+    if CFG.use_modfly or CFG.modfly then
+        CFG.use_modfly = true
+        CFG.modfly = true
         pcall(editToggle, "ModFly", true)
     end
-    if CFG.use_anti_lava then
+    if CFG.use_anti_lava or CFG.anti_lava then
+        CFG.use_anti_lava = true
+        CFG.anti_lava = true
         pcall(editToggle, "Anti Lava", true)
         pcall(editToggle, "No Lava", true)
     end
@@ -1923,6 +1927,8 @@ local function awaitTileLayerCleared(tx, ty, isFgLayer, maxWaitMs)
     return false
 end
 
+local ensurePlayerAtRowCorridor = nil
+
 local function breakTileLayerWithLagGuard(tx, ty, isFgLayer, preferredDirX)
     local maxRounds = 5
     for round = 1, maxRounds do
@@ -1948,13 +1954,22 @@ local function breakTileLayerWithLagGuard(tx, ty, isFgLayer, preferredDirX)
 
         local curPx, curPy = getPlayerTilePos()
         if curPx and curPy and (math.abs(curPx - tx) > 3 or math.abs(curPy - ty) > 3) then
-            -- Bot masih di luar jangkauan (terhalang medan padat), jangan kirim pukulan kosong!
-            return false
+            -- Bot di luar jangkauan (terdorong atau baru reconnect): pulihkan posisi melalui koridor
+            if ensurePlayerAtRowCorridor and ensurePlayerAtRowCorridor(ty, tx, preferredDirX) then
+                curPx, curPy = getPlayerTilePos()
+            end
+            if (not curPx) or (math.abs(curPx - tx) > 3 or math.abs(curPy - ty) > 3) then
+                return false
+            end
         end
 
         local prevProgress = tonumber(t.progress) or 0
         local baseHits = estimateTileBreakHits(curId)
-        local burstCount = (round == 1) and baseHits or math.min(3, math.max(1, math.ceil(baseHits / 2)))
+        local burstCount = (round == 1) and baseHits or math.min(4, math.max(1, math.ceil(baseHits / 2)))
+        -- Bila putaran sebelumnya sudah mengurangi tile (progress bertambah), hitung sisa pukulan sebenarnya
+        if round > 1 and prevProgress > 0 and baseHits > prevProgress then
+            burstCount = math.min(burstCount, baseHits - prevProgress)
+        end
 
         for _ = 1, burstCount do
             if not waitIfPaused() then return false end
@@ -1968,17 +1983,20 @@ local function breakTileLayerWithLagGuard(tx, ty, isFgLayer, preferredDirX)
             safeSleep(CFG.delay_break)
         end
 
-        -- Polling ultra-cepat setiap 25ms agar langsung pindah tanpa jeda terasa, tetap aman anti-spam saat lag
-        local waitWindow = (round == 1) and 220 or ((round == 2) and 280 or 360)
+        -- Polling adaptif aman lag (300-500ms) agar update tile dari server selesai diterima
+        local waitWindow = (round == 1) and math.max(300, (CFG.delay_break or 180) * 2)
+            or ((round == 2) and math.max(400, (CFG.delay_break or 180) * 2.5) or math.max(500, (CFG.delay_break or 180) * 3))
         if awaitTileLayerCleared(tx, ty, isFgLayer, waitWindow) then
             return true
         end
 
-        -- Still intact: bila disconnect saat sedang break, tunggu online kembali lalu lanjutkan tile ini
+        -- Still intact: bila disconnect saat sedang break, tunggu online kembali lalu pulihkan posisi ke tile ini
         local wNow = getWorldNameSafe()
         if wNow == "" or wNow == "EXIT" then
             if ensureOnlineInWorld and ensureOnlineInWorld(STATE.active_world, STATE.active_door) then
-                -- Reconnect berhasil, lanjut putaran berikutnya tanpa membuang tile
+                if ensurePlayerAtRowCorridor then
+                    ensurePlayerAtRowCorridor(ty, tx, preferredDirX)
+                end
             else
                 return false
             end
@@ -5284,6 +5302,95 @@ local function getDFRowBounds()
     return minX, maxX
 end
 
+-- Helper: Navigasi koridor pemulihan setelah DC / Rubberband ke posisi kerja di baris targetY & kolom targetX
+ensurePlayerAtRowCorridor = function(targetY, targetX, stepDir)
+    if not targetY or not targetX then return false end
+    targetX = math.max(0, math.min(99, targetX))
+    targetY = math.max(0, math.min(53, targetY))
+
+    local px, py = getPlayerTilePos()
+    if not px or not py then return false end
+
+    -- Bila sudah sangat dekat (<= 2 tile di x dan <= 1 tile di y), posisi sudah tercapai
+    if math.abs(px - targetX) <= 2 and math.abs(py - targetY) <= 1 then
+        return true
+    end
+
+    -- Coba langsung langkah aman moveSafeTo
+    if moveSafeTo(targetX, targetY) then
+        local nx, ny = getPlayerTilePos()
+        if nx and ny and math.abs(nx - targetX) <= 2 and math.abs(ny - targetY) <= 1 then
+            return true
+        end
+    end
+
+    -- Bila jarak jauh (> 3 tile di x atau > 2 tile di y), misal bot berada di White Door (y <= 23)
+    local curPx, curPy = getPlayerTilePos()
+    if not curPx or not curPy then return false end
+
+    local rowMinX, rowMaxX = getDFRowBounds()
+    local sideCols = getSideColumns()
+
+    -- Tentukan urutan koridor vertikal samping (kiri atau kanan) yang sudah bersih
+    local primarySide = (targetX < 50) and rowMinX or rowMaxX
+    local secondarySide = (primarySide == rowMinX) and rowMaxX or rowMinX
+
+    if stepDir and stepDir > 0 then
+        -- Bergerak ke kanan: sisi kiri (rowMinX) sudah pasti bersih sampai ke targetX
+        primarySide = rowMinX
+        secondarySide = rowMaxX
+    elseif stepDir and stepDir < 0 then
+        -- Bergerak ke kiri: sisi kanan (rowMaxX) sudah pasti bersih sampai ke targetX
+        primarySide = rowMaxX
+        secondarySide = rowMinX
+    end
+
+    -- Pastikan ModFly aktif agar dapat melewati shaft vertikal tanpa terhambat gravitasi
+    if CFG.use_modfly or CFG.modfly then
+        if editToggle then pcall(editToggle, "ModFly", true) end
+    end
+
+    local candidateSides = { primarySide, secondarySide }
+    for _, sideX in ipairs(candidateSides) do
+        if not STATE.running then return false end
+        -- 1. Bergerak di area langit / permukaan (Y <= 23) menuju mulut shaft vertikal
+        local skyY = math.min(curPy, 23)
+        if skyY > 23 then skyY = 23 end
+        if skyY < 1 then skyY = 1 end
+
+        moveSafeTo(sideX, skyY)
+        safeSleep(60)
+
+        -- 2. Turun melalui shaft vertikal samping sampai ke baris targetY
+        moveSafeTo(sideX, targetY)
+        safeSleep(60)
+
+        -- 3. Telusuri baris targetY secara horizontal dari samping menuju targetX
+        local corridorWalkOk = moveSafeTo(targetX, targetY)
+        if not corridorWalkOk then
+            -- Bila bot tersangkut di baris targetY beberapa tile sebelum targetX
+            local stuckPx, stuckPy = getPlayerTilePos()
+            if stuckPx and stuckPy and math.abs(stuckPy - targetY) <= 1 and math.abs(stuckPx - targetX) <= 6 then
+                local dirAhead = (targetX > stuckPx) and 1 or -1
+                local obsX = stuckPx + dirAhead
+                local okO, tO = pcall(getTile, obsX, targetY)
+                if okO and tO and isTileClearableByBot(tO) and (tO.fg ~= 0 or (CFG.break_cave_bg and tO.bg ~= 0)) then
+                    breakTileCompletely(obsX, targetY, tO.fg ~= 0, CFG.break_cave_bg and tO.bg ~= 0, -dirAhead, true)
+                end
+                moveSafeTo(targetX, targetY)
+            end
+        end
+
+        local finalPx, finalPy = getPlayerTilePos()
+        if finalPx and finalPy and math.abs(finalPx - targetX) <= 3 and math.abs(finalPy - targetY) <= 2 then
+            return true
+        end
+    end
+
+    local endPx, endPy = getPlayerTilePos()
+    return endPx and endPy and (math.abs(endPx - targetX) <= 3 and math.abs(endPy - targetY) <= 2)
+end
+
 -- Helper: Cek apakah foreground/tile aman untuk dibersihkan bot (bukan Bedrock, Main Door, Lock, atau Jammer)
 local function isTileClearableByBot(t)
     if not t then return false end
@@ -5337,17 +5444,31 @@ local function standAndBreak3AtCol(worldName, activeDoorID, doorX, doorY, x, cen
     end
     sanitizeLavaUnderFoot(x, centerY, doorX, doorY, safeStandDir)
 
+    -- Posisi Karakter Guard: Pastikan karakter benar-benar sampai di koordinat (standX, centerY)
     local px, py = getPlayerTilePos()
     if (not px) or py ~= centerY or math.abs(px - x) > 2 or (px == x and py == centerY) or (not isTileSafeToStand(px, py)) then
-        if isTileSafeToStand(standX, centerY) then
-            moveSafeTo(standX, centerY)
+        if isTileSafeToStand(standX, centerY) and moveSafeTo(standX, centerY) then
+            -- Berhasil sampai ke standX
         else
             moveAdjacentSafe(x, centerY, safeStandDir)
         end
     end
 
+    -- Bila setelah gerakan awal karakter masih di luar jangkauan (misal habis DC kembali ke Door), pulihkan via koridor
+    local curPx, curPy = getPlayerTilePos()
+    if (not curPx) or math.abs(curPx - x) > 3 or math.abs(curPy - centerY) > 2 then
+        if ensurePlayerAtRowCorridor then
+            ensurePlayerAtRowCorridor(centerY, standX, -safeStandDir)
+        end
+        curPx, curPy = getPlayerTilePos()
+        if (not curPx) or math.abs(curPx - x) > 3 or math.abs(curPy - centerY) > 2 then
+            -- Bot masih belum mencapai posisi (terhalang atau terlempar jauh), laporkan false
+            return false
+        end
+    end
+
     local targets = { centerY, centerY - 2, centerY + 2 }
-    for _ = 1, 2 do
+    for passBreak = 1, 3 do
         local anyRemaining = false
         for _, ty in ipairs(targets) do
             local need, nFg, nBg = isOddTileClearNeeded(x, ty, doorX, doorY)
@@ -5384,6 +5505,14 @@ local function standAndBreak3AtCol(worldName, activeDoorID, doorX, doorY, x, cen
         collectNearbyFloating(x, centerY, CFG.collect_range, true)
     end
     checkTrashAndSeeds(worldName, activeDoorID)
+
+    -- Validasi tuntas kolom: pastikan tidak ada target ganjil tersisa di kolom ini
+    for _, ty in ipairs(targets) do
+        if isOddTileClearNeeded(x, ty, doorX, doorY) then
+            return false
+        end
+    end
+    return true
 end
 
 -- Helper: Deteksi & bersihkan ulang tile yang tertinggal saat break akibat lag (0 ms bila sudah bersih, max 4 pass + fallback langsung per-tile)
@@ -5440,7 +5569,7 @@ local function sweepRemainingBreakTiles(worldName, activeDoorID, doorX, doorY, c
                 for x = rowMinX, rowMaxX do
                     local need, needFg, needBg = isOddTileClearNeeded(x, y, doorX, doorY)
                     if need then
-                        table.insert(oddLeftoverFlat, { x = x, y = y, fg = needFg, bg = needBg, dir = -1 })
+                        table.insert(oddLeftoverFlat, { x = x, y = y, fg = needFg, bg = needBg, dir = (x < 50) and 1 or -1 })
                         totalLeftover = totalLeftover + 1
                     end
                 end
@@ -5475,12 +5604,18 @@ local function sweepRemainingBreakTiles(worldName, activeDoorID, doorX, doorY, c
         for _, grp in ipairs(oddGroups3) do
             if not waitIfPaused() then return false end
             if not ensureOnlineInWorld(worldName, activeDoorID) then return false end
+            if ensurePlayerAtRowCorridor then
+                ensurePlayerAtRowCorridor(grp.centerY, grp.x, -grp.dir)
+            end
             standAndBreak3AtCol(worldName, activeDoorID, doorX, doorY, grp.x, grp.centerY, grp.dir)
         end
         for _, cellList in ipairs({ sideLeftover, oddLeftoverFlat, evenLeftover }) do
             for _, cell in ipairs(cellList) do
                 if not waitIfPaused() then return false end
                 if not ensureOnlineInWorld(worldName, activeDoorID) then return false end
+                if ensurePlayerAtRowCorridor then
+                    ensurePlayerAtRowCorridor(cell.y, cell.x, cell.dir)
+                end
                 if cell.y >= 25 then
                     sanitizeLavaUnderFoot(cell.x, cell.y, doorX, doorY, cell.dir)
                 end
@@ -5490,7 +5625,66 @@ local function sweepRemainingBreakTiles(worldName, activeDoorID, doorX, doorY, c
             end
         end
     end
-    return true
+
+    -- Hitung sisa riil tile ganjil & pinggir setelah 4 putaran
+    local finalLeftover = 0
+    for y = 25, 53, 2 do
+        for x = rowMinX, rowMaxX do
+            if isOddTileClearNeeded(x, y, doorX, doorY) then
+                finalLeftover = finalLeftover + 1
+            end
+        end
+    end
+    for _, colX in ipairs(sideCols) do
+        for y = 24, 53 do
+            if (not isProtectedEnclosure(colX, y, doorX, doorY)) and (not isEdgePlatformTile(colX, y, doorX, doorY)) then
+                local ok, t = pcall(getTile, colX, y)
+                if ok and isTileClearableByBot(t) and (t.fg ~= 0 or (CFG.break_cave_bg and t.bg ~= 0)) then
+                    finalLeftover = finalLeftover + 1
+                end
+            end
+        end
+    end
+
+    if finalLeftover == 0 then
+        addLog("Deteksi Lag Break OK: Semua tile tertinggal sudah bersih (0 tersisa)!")
+        return true
+    end
+
+    -- Putaran Pemulihan Presisi (Targeted Rescue): Jika masih ada block tertinggal akibat lag/dc parah
+    setStatus("Deteksi Lag Break", string.format("Rescue Pass: Membersihkan %d tile ganjil tersisa...", finalLeftover))
+    addLog(string.format("[Rescue Sweep] Terdeteksi %d block tertinggal akibat lag/DC. Menjalankan pembersihan langsung...", finalLeftover))
+    for y = 25, 53, 2 do
+        for x = rowMinX, rowMaxX do
+            if not waitIfPaused() then return false end
+            if not ensureOnlineInWorld(worldName, activeDoorID) then return false end
+            local need, nFg, nBg = isOddTileClearNeeded(x, y, doorX, doorY)
+            if need then
+                if ensurePlayerAtRowCorridor then
+                    ensurePlayerAtRowCorridor(y, x, (x < 50) and 1 or -1)
+                end
+                moveAdjacentSafe(x, y, (x < 50) and 1 or -1)
+                breakTileCompletely(x, y, nFg, nBg, (x < 50) and 1 or -1)
+            end
+        end
+    end
+
+    -- Re-check final strictly: JANGAN PERNAH return true jika masih ada block di baris ganjil!
+    local strictLeftover = 0
+    for y = 25, 53, 2 do
+        for x = rowMinX, rowMaxX do
+            if isOddTileClearNeeded(x, y, doorX, doorY) then
+                strictLeftover = strictLeftover + 1
+            end
+        end
+    end
+    if strictLeftover == 0 then
+        addLog("Deteksi Lag Break OK: Pembersihan presisi sukses, seluruh baris ganjil bersih!")
+        return true
+    else
+        addLog(string.format("PERINGATAN: Masih terdapat %d block di baris ganjil! Menahan alur agar tidak membangun platform di world kotor.", strictLeftover))
+        return false
+    end
 end
 
 -- Stage B: Clear Side Columns (x = 0,99 bila platform false; 2 kolom bila platform aktif) and Alternating Rows (Mode 1 Tile / Mode 3 Tile)
@@ -5585,7 +5779,26 @@ local function clearWorldDirtFarm(worldName, activeDoorID, doorX, doorY)
                         end
                     end
                     if anyNeed then
-                        standAndBreak3AtCol(worldName, activeDoorID, doorX, doorY, x, centerY, safeStandDir)
+                        local okCol = standAndBreak3AtCol(worldName, activeDoorID, doorX, doorY, x, centerY, safeStandDir)
+                        if not okCol then
+                            -- Periksa koneksi world terlebih dahulu (jika sempat terputus/DC)
+                            if not ensureOnlineInWorld(worldName, activeDoorID) then return false end
+                            -- Pulihkan posisi melalui koridor samping & coba lagi
+                            if ensurePlayerAtRowCorridor then
+                                ensurePlayerAtRowCorridor(centerY, x + safeStandDir, stepX)
+                            end
+                            okCol = standAndBreak3AtCol(worldName, activeDoorID, doorX, doorY, x, centerY, safeStandDir)
+                            if not okCol then
+                                -- Bila masih gagal (misal rock keras/lag sesaat), coba break langsung per-tile
+                                for _, ty in ipairs({ centerY, centerY - 2, centerY + 2 }) do
+                                    local nd, nF, nB = isOddTileClearNeeded(x, ty, doorX, doorY)
+                                    if nd then
+                                        moveAdjacentSafe(x, ty, safeStandDir)
+                                        breakTileCompletely(x, ty, nF, nB, safeStandDir, true)
+                                    end
+                                end
+                            end
+                        end
                     end
                 end
                 goingRight = not goingRight
@@ -5605,6 +5818,12 @@ local function clearWorldDirtFarm(worldName, activeDoorID, doorX, doorY)
                     if not waitIfPaused() then return false end
                     local need, nFg, nBg = isOddTileClearNeeded(x, y, doorX, doorY)
                     if need then
+                        local px, py = getPlayerTilePos()
+                        if (not px) or math.abs(px - x) > 3 or math.abs(py - y) > 2 then
+                            if ensurePlayerAtRowCorridor then
+                                ensurePlayerAtRowCorridor(y, x + safeStandDir, stepX)
+                            end
+                        end
                         sanitizeLavaUnderFoot(x, y, doorX, doorY, safeStandDir)
                         breakTileCompletely(x, y, nFg, nBg, safeStandDir)
                         checkTrashAndSeeds(worldName, activeDoorID)
@@ -5617,7 +5836,12 @@ local function clearWorldDirtFarm(worldName, activeDoorID, doorX, doorY)
 
     -- Deteksi cepat apakah masih ada tile pinggir/baris ganjil yang tertinggal karena lag saat break
     if not sweepRemainingBreakTiles(worldName, activeDoorID, doorX, doorY, false) then
-        return false
+        addLog("Pembersihan baris ganjil belum tuntas sempurna, melakukan sweep darurat...")
+        safeSleep(300)
+        if not sweepRemainingBreakTiles(worldName, activeDoorID, doorX, doorY, false, true) then
+            addLog("Error: Gagal membersihkan seluruh block tertinggal. World belum siap untuk platform!")
+            return false
+        end
     end
 
     -- Baris Platform Genap Bawah (24..52): HANYA break Lava (jika aktif) & Rock (jika df_break_rock aktif); put dilakukan batch 3 tile di buildUpperPlatforms
@@ -5662,6 +5886,14 @@ local function clearWorldDirtFarm(worldName, activeDoorID, doorX, doorY)
     -- Validasi akhir break DF (termasuk baris genap Lava/Rock yg mungkin terlewat akibat lag)
     if not sweepRemainingBreakTiles(worldName, activeDoorID, doorX, doorY, true) then
         return false
+    end
+
+    -- Final Gate Check: Pastikan 100% tidak ada tile ganjil yang tersisa sebelum menyatakan clearWorldDirtFarm selesai
+    if not isDFOddClearAlreadyDone(doorX, doorY) then
+        addLog("Gate Check: Masih ada block tertinggal di baris ganjil! Menjalankan sweep akhir...")
+        if not sweepRemainingBreakTiles(worldName, activeDoorID, doorX, doorY, false, true) then
+            return false
+        end
     end
 
     return true
@@ -8099,7 +8331,9 @@ local function handleDFDialogReturn(pkt)
                 CFG.break_3_mode = (b3Val:find("1") ~= nil)
             end
             CFG.modfly = (getVal("df_chk_modfly"):find("1") ~= nil)
+            CFG.use_modfly = CFG.modfly
             CFG.anti_lava = (getVal("df_chk_anti_lava"):find("1") ~= nil)
+            CFG.use_anti_lava = CFG.anti_lava
             CFG.auto_reconnect = (getVal("df_chk_auto_reconnect"):find("1") ~= nil)
             CFG.auto_collect = (getVal("df_chk_auto_collect"):find("1") ~= nil)
             local dBrk = getNum("df_in_delay_break", 180)
