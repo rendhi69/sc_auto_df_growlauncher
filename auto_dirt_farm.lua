@@ -1841,7 +1841,10 @@ local function collectNearbyFloating(centerX, centerY, customRadius, quickMode, 
             local dist = math.max(math.abs(ox - refX), math.abs(oy - refY))
 
             local spotKey = tostring(ox) .. "," .. tostring(oy)
-            if dist <= radius and itemid ~= ITEM.LAVA and (not STATE.df_dropped_spots[spotKey]) then
+            -- Lava block (ITEM.LAVA) hanya boleh diambil jika save_lava_block diaktifkan oleh user
+            local isLavaBlock = (itemid == ITEM.LAVA)
+            local lavaBlockAllowed = isLavaBlock and CFG.save_lava_block
+            if dist <= radius and (not isLavaBlock or lavaBlockAllowed) and (not STATE.df_dropped_spots[spotKey]) then
                 local curAmt = getInvCount(itemid)
                 if curAmt < 200 then
                     local curPx, curPy = getPlayerTilePos()
