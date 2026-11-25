@@ -4610,27 +4610,35 @@ local function quickScanCandidateWorld(candidate)
         end
     end
 
+    -- Hitung batas waktu warp dinamis sesuai delay_warp player (minimal 7500 ms agar tidak timeout prematur)
+    local warpDelay = math.max(4500, tonumber(CFG.delay_warp) or 4500)
+    local maxWaitMs = warpDelay + 3500 -- misal 4500 + 3500 = 8000 ms (8 detik)
+    local maxTicks = math.ceil(maxWaitMs / 250)
+
     -- Kirim join request 1x
     sendPacket(3, "action|join_request\nname|" .. candidate .. "\ninvitedWorld|0\n")
 
-    -- Tunggu hingga player masuk ke candidate (maks 2800ms)
+    -- Tunggu hingga player masuk ke candidate (cek per 250ms, langsung lanjut begitu terdeteksi masuk)
     local arrived = false
-    for _ = 1, 14 do
-        safeSleep(200)
-        if getWorldNameSafe() == candidate then
+    for _ = 1, maxTicks do
+        if not waitIfPaused() then return false, "Bot di-pause / dihentikan" end
+        local cur = getWorldNameSafe()
+        if cur == candidate then
             arrived = true
             break
         end
+        safeSleep(250)
     end
     if not arrived then
         return false, "Gagal masuk world (inaccessible/locked/timeout)"
     end
 
-    -- Tunggu tile termuat (maks 4000ms)
-    local tilesOk = waitForWorldTiles(4000)
+    -- Tunggu tile termuat (minimal warpDelay ms)
+    local tilesOk = waitForWorldTiles(math.max(5000, warpDelay))
     if not tilesOk then
-        return false, "Tile belum termuat setelah warp"
+        return false, "Tile belum termuat di " .. candidate
     end
+    safeSleep(500)
 
     -- Cek kelayakan world
     local usable, reason = isCurrentWorldUsableForRandom()
@@ -4811,12 +4819,31 @@ local function syncInputsFromGL()
 
     local bItemId = readGLItemOrInt("df_input_blocker", nil) or readGLItemOrInt("df_pick_blocker", nil)
     if bItemId and bItemId > 0 then CFG.blocker_door_itemid = bItemId end
-    -- Jangan overwrite world_mode dari GL jika sudah diatur via dialog, sinkronkan ke GL toggle saja
+    -- Jangan overwrite world_mode & random_target_count dari GL jika sudah diatur via dialog / config persisten
     if editToggle then pcall(editToggle, "df_world_random", CFG.world_mode == "random") end
-    local rTgt = tonumber(readGLString("df_random_target", ""))
-    if rTgt and rTgt >= 1 then CFG.random_target_count = math.floor(rTgt) end
+    if editInputText then pcall(editInputText, "df_random_target", tostring(CFG.random_target_count or 5)) end
     local wFile = readGLString("df_world_file", "")
     if wFile ~= "" then CFG.world_file_name = wFile end
+end
+
+local function countCompletedRandomWorlds()
+    local cnt = 0
+    for _, w in ipairs(CFG.world_list or {}) do
+        if w.from_random and (w.done or w.status == "DONE") then
+            cnt = cnt + 1
+        end
+    end
+    return cnt
+end
+
+local function countTotalRandomWorldsInQueue()
+    local cnt = 0
+    for _, w in ipairs(CFG.world_list or {}) do
+        if w.from_random then
+            cnt = cnt + 1
+        end
+    end
+    return cnt
 end
 
 local function acquireTargetWorld()
@@ -4889,27 +4916,31 @@ local function acquireTargetWorld()
         return nil, nil, nil
     else
         -- MODE RANDOM:
-        -- 1. Selesaikan world yang statusnya masih 'PROSES' (misal sempat pause / reconnect)
+        local targetCount = math.max(1, math.floor(tonumber(CFG.random_target_count) or 5))
+        local doneCount = math.max(STATE.random_done_count or 0, countCompletedRandomWorlds())
+
+        -- 1. Selesaikan world yang statusnya masih 'PROSES' atau 'ANTRI' di antrean sebelum mencari baru
         for idx, entry in ipairs(CFG.world_list) do
-            if (not entry.done) and entry.status == "PROSES" then
+            if (not entry.done) and entry.status ~= "DONE" then
+                entry.status = "PROSES"
                 STATE.active_world = entry.name
                 STATE.active_door = entry.door or ""
-                setStatus("Lanjut World", string.format("Melanjutkan %s (PROSES)", entry.name))
+                setStatus("Lanjut World", string.format("Mengerjakan %s (%s)", entry.name, entry.status))
                 if not warpTo(entry.name, entry.door) then
                     if not ensureOnlineInWorld(entry.name, entry.door) then
                         return nil, nil, nil
                     end
                 end
-                waitForWorldTiles(4000)
+                waitForWorldTiles(math.max(4500, tonumber(CFG.delay_warp) or 4500))
                 safeSleep(800)
+                if updateWorldDisplayList then pcall(updateWorldDisplayList) end
                 return entry.name, entry.door, idx
             end
         end
 
-        -- 2. Cek apakah target random sudah tercapai
-        local targetCount = math.max(1, math.floor(tonumber(CFG.random_target_count) or 5))
-        if (STATE.random_done_count or 0) >= targetCount then
-            local doneMsg = string.format("Target Find Random selesai (%d/%d world DONE)!", STATE.random_done_count, targetCount)
+        -- 2. Cek apakah target random sudah tercapai berdasarkan world yang telah selesai
+        if doneCount >= targetCount then
+            local doneMsg = string.format("Target Find Random selesai (%d/%d world DONE)!", doneCount, targetCount)
             STATE.active_world = ""
             STATE.active_door = ""
             setStatus("Target Random Selesai", doneMsg)
@@ -4918,10 +4949,22 @@ local function acquireTargetWorld()
             return nil, nil, nil
         end
 
-        -- 3. Cari world kosong baru via Find Random World scanner
+        -- 3. Cek apakah total world random di antrean sudah mencapai targetCount
+        local totalRandom = countTotalRandomWorldsInQueue()
+        if totalRandom >= targetCount then
+            local doneMsg = string.format("Target Find Random tercapai (%d/%d world terdaftar)!", doneCount, targetCount)
+            STATE.active_world = ""
+            STATE.active_door = ""
+            setStatus("Target Random Selesai", doneMsg)
+            addLog(doneMsg)
+            if sendNotification then pcall(sendNotification, doneMsg) end
+            return nil, nil, nil
+        end
+
+        -- 4. Cari world kosong baru via Find Random World scanner
         local attempt = 0
         local maxAttempts = 60
-        addLog(string.format("[Find World] Memulai pencarian world kosong (Target: %d/%d)...", (STATE.random_done_count or 0) + 1, targetCount))
+        addLog(string.format("[Find World] Memulai pencarian world kosong (Target: %d/%d)...", doneCount + 1, targetCount))
 
         while STATE.running and attempt < maxAttempts do
             if not waitIfPaused() then return nil, nil, nil end
@@ -4938,7 +4981,7 @@ local function acquireTargetWorld()
             end
 
             if not alreadyInList then
-                setStatus("Find Random World", string.format("Cek #%d/%d: %s (Target %d/%d)", attempt, maxAttempts, candidate, (STATE.random_done_count or 0) + 1, targetCount))
+                setStatus("Find Random World", string.format("Cek #%d/%d: %s (Target %d/%d)", attempt, maxAttempts, candidate, doneCount + 1, targetCount))
                 local usable, reason = quickScanCandidateWorld(candidate)
                 if usable then
                     addLog(string.format("`2[Find World Sukses] `wDitemukan World Kosong: %s (%s) -> Siap dibuat DF!", candidate, reason))
@@ -4959,6 +5002,7 @@ local function acquireTargetWorld()
                     return candidate, newDoor, listIdx
                 else
                     addLog(string.format("[Skip #%d] %s: %s", attempt, candidate, reason))
+                    safeSleep(1200)
                 end
             end
             safeSleep(300)
@@ -6427,7 +6471,7 @@ local function startAutoDF()
     ensureRuntimeHooks()
     STATE.running = true
     STATE.paused  = false
-    STATE.random_done_count = 0
+    STATE.random_done_count = countCompletedRandomWorlds()
     if editToggle then pcall(editToggle, "df_run_power", true) end
     if updatePowerStatusList then pcall(updatePowerStatusList) end
 
@@ -7541,6 +7585,21 @@ local function handleDFDialogReturn(pkt)
 
     -- Find Random World
     elseif dName == "df_find_w" or pkt:find("dialog_name|df_find_w", 1, true) then
+        -- Selalu baca dan simpan konfigurasi Target World Selesai, Panjang Huruf & Angka di tiap aksi dialog
+        local lenVal = getNum("df_in_find_len", 0)
+        if lenVal and lenVal >= 3 and lenVal <= 16 then
+            CFG.random_length = lenVal
+        end
+        local numVal = getVal("df_chk_find_num")
+        if numVal ~= "" then
+            CFG.random_use_numbers = (numVal:find("1") ~= nil)
+        end
+        local tarVal = getNum("df_in_find_target", 0)
+        if tarVal and tarVal >= 1 then
+            CFG.random_target_count = tarVal
+        end
+        persistConfig()
+
         if btn == "df_btn_find_toggle_mode" or pkt:find("buttonClicked|df_btn_find_toggle_mode", 1, true) then
             CFG.world_mode = (CFG.world_mode == "random") and "manual" or "random"
             persistConfig()
@@ -7548,29 +7607,10 @@ local function handleDFDialogReturn(pkt)
             DLG.showDFFindWorldDialog()
             return true
         elseif btn == "df_btn_save_find_cfg" or pkt:find("buttonClicked|df_btn_save_find_cfg", 1, true) then
-            local lenVal = getNum("df_in_find_len", CFG.random_length or 6)
-            if lenVal and lenVal >= 3 and lenVal <= 16 then
-                CFG.random_length = lenVal
-            end
-            local numVal = getVal("df_chk_find_num")
-            CFG.random_use_numbers = (numVal:find("1") ~= nil)
-            local tarVal = getNum("df_in_find_target", CFG.random_target_count or 5)
-            if tarVal and tarVal >= 1 then
-                CFG.random_target_count = tarVal
-            end
-            persistConfig()
             if sendNotification then pcall(sendNotification, "Konfigurasi Find World disimpan!") end
             DLG.showDFFindWorldDialog()
             return true
         elseif btn == "df_btn_generate_1_world" or pkt:find("buttonClicked|df_btn_generate_1_world", 1, true) then
-            local lenVal = getNum("df_in_find_len", CFG.random_length or 6)
-            if lenVal and lenVal >= 3 and lenVal <= 14 then
-                CFG.random_length = lenVal
-            end
-            local numVal = getVal("df_chk_find_num")
-            if numVal ~= "" then
-                CFG.random_use_numbers = (numVal:find("1") ~= nil)
-            end
             local rLen = tonumber(CFG.random_length) or 6
             local rNum = CFG.random_use_numbers
             local candidate = generateRandomWorldName(rLen, rNum)
