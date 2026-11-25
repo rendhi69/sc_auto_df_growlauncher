@@ -540,6 +540,7 @@ local CFG = {
     save_lava_seed      = loadPref("save_lava_seed", true),
     save_rock_seed      = loadPref("save_rock_seed", true),
     save_lava_block     = loadPref("save_lava_block", false),
+    save_item_list_str  = tostring(loadPref("save_item_list_str", "3,15,5,11") or "3,15,5,11"),
     use_custom_save     = loadPref("use_custom_save", false),
     custom_save_itemid  = tonumber(loadPref("custom_save_itemid", 3)) or 3,
 
@@ -2161,10 +2162,39 @@ end
 -- 6. NETWORK WARP, TRASH, DROP & VALIDATED WRENCH DIALOG EDITING
 -- ============================================================================
 
+local function isPlayerOnlineInWorld()
+    local curW = getWorldNameSafe()
+    if curW == "" or curW == "EXIT" then
+        return false, curW
+    end
+    if getLocal then
+        local okP, p = pcall(getLocal)
+        if not okP or not p then
+            return false, curW
+        end
+        if not p.netID or p.netID < 0 then
+            return false, curW
+        end
+    end
+    return true, curW
+end
+
 local function warpTo(worldName, doorID)
     if not worldName or worldName == "" then return false end
     worldName = worldName:upper():gsub("%s+", "")
     doorID = (doorID or ""):gsub("%s+", "")
+
+    -- Cek status koneksi: JANGAN spam packet warp jika player sedang offline / disconnect!
+    local onlineInit, curInit = isPlayerOnlineInWorld()
+    if not onlineInit then
+        addLog(string.format("[Warp Ditahan] Player sedang offline/disconnect (World: '%s'). Menunggu reconnect sebelum warp ke %s...", curInit, worldName))
+        if ensureOnlineInWorld and not ensureOnlineInWorld(worldName, doorID) then
+            return false
+        end
+        if getWorldNameSafe() == worldName then
+            return true
+        end
+    end
 
     local targetStr = (doorID ~= "") and (worldName .. "|" .. doorID) or worldName
     setStatus("Warping", "Menuju world " .. targetStr)
@@ -2172,7 +2202,15 @@ local function warpTo(worldName, doorID)
     local tries = 0
     while STATE.running and tries < 5 do
         if not waitIfPaused() then return false end
-        local cur = getWorldNameSafe()
+        local onlineNow, cur = isPlayerOnlineInWorld()
+        if not onlineNow then
+            addLog("[Warp Ditahan] Koneksi terputus saat proses warp! Menunggu reconnect...")
+            if ensureOnlineInWorld and not ensureOnlineInWorld(worldName, doorID) then
+                return false
+            end
+            return getWorldNameSafe() == worldName
+        end
+
         if cur ~= worldName then
             sendPacket(3, "action|join_request\nname|" .. targetStr .. "\ninvitedWorld|0\n")
             safeSleep(CFG.delay_warp)
@@ -2193,20 +2231,6 @@ local function warpTo(worldName, doorID)
     STATE.current_world = getWorldNameSafe()
     applyCheatToggles()
     return STATE.current_world == worldName
-end
-
-local function isPlayerOnlineInWorld()
-    local curW = getWorldNameSafe()
-    if curW == "" or curW == "EXIT" then
-        return false, curW
-    end
-    if getLocal then
-        local okP, p = pcall(getLocal)
-        if not okP or not p then
-            return false, curW
-        end
-    end
-    return true, curW
 end
 
 -- Tunggu hingga data tiles di world termuat sempurna (Main Door atau getTile valid)
@@ -2238,51 +2262,43 @@ ensureOnlineInWorld = function(expectedWorld, expectedDoor)
         return false
     end
 
-    local wasDisconnected = not online
     STATE.reconnecting = true
-    if wasDisconnected then
-        setStatus("Menunggu Reconnect", "Disconnect terdeteksi! Menunggu login kembali...")
-        addLog("[Auto-Reconnect] Terputus dari server. Menunggu login kembali...")
-    end
+    setStatus("Menunggu Reconnect", "Disconnect terdeteksi! Menunggu game login kembali tanpa spam...")
+    addLog("[Auto-Reconnect] Terputus dari server. Menunggu login kembali tanpa spam warp...")
     applyCheatToggles()
 
-    local ticks = 0
+    local waitTicks = 0
     while STATE.running do
         if not waitIfPaused() then
             STATE.reconnecting = false
             return false
         end
         safeSleep(2000)
-        ticks = ticks + 1
+        waitTicks = waitTicks + 1
 
         local nowOnline, nowW = isPlayerOnlineInWorld()
         if nowOnline then
+            addLog(string.format("[Auto-Reconnect] Berhasil login kembali! Berada di world '%s'. Menstabilkan koneksi...", nowW))
+            setStatus("Koneksi Pulih", "Menstabilkan koneksi game...")
+            safeSleep(2500)
+            applyCheatToggles()
+
             if targetW ~= "" and nowW ~= targetW then
-                setStatus("Auto Reconnect", "Kembali online! Masuk lagi ke " .. targetW .. "...")
-                addLog("[Auto-Reconnect] Berhasil online! Menuju world target: " .. targetW)
-                if warpTo(targetW, targetD) then
-                    safeSleep(800)
-                    waitForWorldTiles(4000)
-                    STATE.reconnecting = false
-                    STATE.current_world = targetW
-                    applyCheatToggles()
-                    addLog("[Auto-Reconnect] Siap melanjutkan pekerjaan di " .. targetW .. "!")
-                    return true
-                end
-            else
-                safeSleep(600)
-                STATE.reconnecting = false
-                STATE.current_world = nowW
-                applyCheatToggles()
-                addLog("[Auto-Reconnect] Kembali online di world " .. nowW .. "!")
-                return true
-            end
-        elseif targetW ~= "" and getLocal then
-            local okP, p = pcall(getLocal)
-            if okP and p and (ticks % 3 == 0) then
+                setStatus("Auto Reconnect", "Masuk lagi ke world " .. targetW .. "...")
+                addLog("[Auto-Reconnect] Melanjutkan perjalanan menuju world target: " .. targetW)
                 local targetStr = (targetD ~= "") and (targetW .. "|" .. targetD) or targetW
-                pcall(sendPacket, 3, "action|join_request\nname|" .. targetStr .. "\ninvitedWorld|0\n")
+                sendPacket(3, "action|join_request\nname|" .. targetStr .. "\ninvitedWorld|0\n")
+                safeSleep(CFG.delay_warp)
+                waitForWorldTiles(5000)
+                safeSleep(800)
             end
+
+            STATE.reconnecting = false
+            STATE.current_world = getWorldNameSafe()
+            addLog("[Auto-Reconnect] Siap melanjutkan pekerjaan di world " .. STATE.current_world .. "!")
+            return true
+        else
+            setStatus("Menunggu Reconnect", string.format("Koneksi terputus! Menunggu game reconnect... (%ds)", waitTicks * 2))
         end
     end
 
@@ -2528,6 +2544,9 @@ openEditTrashEntryDialog = function(idx)
 end
 
 openTrashListManagerDialog = function()
+    if DLG and DLG.showDFTrashListDialog then
+        return DLG.showDFTrashListDialog(1)
+    end
     local list = getConfiguredTrashItemList()
     local thresh = math.max(10, tonumber(CFG.trash_threshold) or 150)
     local dLines = {
@@ -3760,10 +3779,14 @@ local function getConfiguredSaveItemList()
     local list = {}
     local seen = {}
     local function addUnique(id)
-        if id and id > 0 and not seen[id] then
-            seen[id] = true
-            table.insert(list, id)
+        local num = tonumber(id)
+        if num and num > 0 and not seen[num] then
+            seen[num] = true
+            table.insert(list, math.floor(num))
         end
+    end
+    for tok in tostring(CFG.save_item_list_str or "3,15,5,11"):gmatch("%d+") do
+        addUnique(tok)
     end
     if CFG.save_dirt_seed then addUnique(ITEM.DIRT_SEED) end
     if CFG.save_cave_seed then addUnique(ITEM.CAVE_SEED) end
@@ -3774,6 +3797,20 @@ local function getConfiguredSaveItemList()
         addUnique(CFG.custom_save_itemid)
     end
     return list
+end
+
+local function setSaveItemListFromTable(list)
+    local parts = {}
+    local seen = {}
+    for _, id in ipairs(list) do
+        local num = tonumber(id)
+        if num and num > 0 and not seen[num] then
+            seen[num] = true
+            table.insert(parts, tostring(num))
+        end
+    end
+    CFG.save_item_list_str = table.concat(parts, ",")
+    persistConfig()
 end
 
 getConfiguredTrashItemList = function()
@@ -3791,10 +3828,16 @@ end
 
 setTrashListFromTable = function(list)
     local parts = {}
+    local seen = {}
     for _, id in ipairs(list) do
-        table.insert(parts, tostring(id))
+        local num = tonumber(id)
+        if num and num > 0 and not seen[num] then
+            seen[num] = true
+            table.insert(parts, tostring(num))
+        end
     end
     CFG.trash_list_str = table.concat(parts, ",")
+    persistConfig()
 end
 
 local function isDropTileOpen(tx, ty)
@@ -4558,6 +4601,14 @@ end
 local function quickScanCandidateWorld(candidate)
     if not candidate or candidate == "" then return false, "Nama world kosong" end
     candidate = candidate:upper():gsub("%s+", "")
+
+    -- Cek koneksi: jangan spam packet join_request jika offline
+    local onlineNow, curW = isPlayerOnlineInWorld()
+    if not onlineNow then
+        if ensureOnlineInWorld and not ensureOnlineInWorld() then
+            return false, "Player offline / disconnect"
+        end
+    end
 
     -- Kirim join request 1x
     sendPacket(3, "action|join_request\nname|" .. candidate .. "\ninvitedWorld|0\n")
@@ -6845,6 +6896,8 @@ DLG.showDFStorageDialog = function()
     local toolCount = #(CFG.storage_tool_list or {})
     local seedCount = #(CFG.storage_seed_list or {})
     local saveThresh = tonumber(CFG.save_seed_threshold) or 180
+    local saveSeedList = getConfiguredSaveItemList()
+    local trashList = getConfiguredTrashItemList()
 
     local lines = {
         "set_default_color|`o",
@@ -6853,12 +6906,15 @@ DLG.showDFStorageDialog = function()
         "add_spacer|small|",
         "add_textbox|`p------------------------------------------------------------|left|",
         string.format("add_textbox|`wGudang Alat: `2(%d World) `p- `wGudang Seed: `2(%d World)|left|", toolCount, seedCount),
+        string.format("add_textbox|`wSave Seed: `2(%d Items) `p- `wTrash: `2(%d Items)|left|", #saveSeedList, #trashList),
         string.format("add_textbox|`wDrop Threshold: simpan jika seed di tas >= `2(%d)|left|", saveThresh),
         "add_textbox|`p------------------------------------------------------------|left|",
         "add_spacer|small|",
         string.format("add_button|df_btn_open_tool_stor|`w1. Gudang Alat (WL/SL/Jam/Door) `2(%d)|noflags|0|0|", toolCount),
         string.format("add_button|df_btn_open_seed_stor|`w2. Gudang Seed (Dirt/Cave/Rock) `2(%d)|noflags|0|0|", seedCount),
-        string.format("add_button|df_btn_open_thresh_stor|`w3. Pengaturan Drop & Threshold `2(%d)|noflags|0|0|", saveThresh),
+        string.format("add_button|df_btn_open_save_seed_list|`w3. Save Seed List (Daftar Seed Disimpan) `2(%d)|noflags|0|0|", #saveSeedList),
+        string.format("add_button|df_btn_open_trash_list|`w4. Trash List (Auto-Trash Sampah) `2(%d)|noflags|0|0|", #trashList),
+        string.format("add_button|df_btn_open_thresh_stor|`w5. Pengaturan Drop & Threshold `2(%d)|noflags|0|0|", saveThresh),
         "add_spacer|small|",
         "add_button|df_btn_dlg_back_main|`wBack|noflags|0|0|",
         "end_dialog|df_storage|Close||"
@@ -7034,6 +7090,117 @@ DLG.showDFStorageThreshDialog = function()
         "add_button|df_btn_back_storage|`wBack|noflags|0|0|",
         "end_dialog|df_thresh_stor|Cancel||"
     }
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+-- 2.4 Save Seed List (Compact, Pagination 5 per Page, Zero Scrollbar)
+DLG.showDFSaveSeedListDialog = function(page)
+    local list = getConfiguredSaveItemList()
+    local totalItems = #list
+    local perPage = 5
+    local totalPages = math.max(1, math.ceil(totalItems / perPage))
+    page = math.max(1, math.min(totalPages, tonumber(page) or DLG.save_seed_page or 1))
+    DLG.save_seed_page = page
+
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wSave Seed List (Vault Target)``|left|3802|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wTotal Target: `2(%d Item) `p- `wPage `2(%d/%d)|left|", totalItems, page, totalPages),
+        "add_textbox|`wSeed/Item di daftar ini akan disimpan ke Gudang Seed saat >= threshold|left|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|"
+    }
+
+    if totalItems == 0 then
+        lines[#lines+1] = "add_textbox|`4(Kosong) `wBelum ada seed/item terdaftar.|left|"
+    else
+        local startIdx = (page - 1) * perPage + 1
+        local endIdx = math.min(totalItems, startIdx + perPage - 1)
+        for i = startIdx, endIdx do
+            local id = list[i]
+            local name = ITEM_NAME_CACHE[id] or resolveItemName(id) or ("Item #" .. tostring(id))
+            local bpCount = getInvCount(id)
+            lines[#lines+1] = string.format("add_textbox|`p- `w#%d. `b%s `2(ID: %d) `p[Tas: %d]|left|", i, name, id, bpCount)
+            lines[#lines+1] = string.format("add_button|df_del_save_seed_%d|`4Delete Seed (#%d)|noflags|0|0|", i, i)
+        end
+    end
+
+    lines[#lines+1] = "add_spacer|small|"
+    lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
+    lines[#lines+1] = "add_text_input|df_in_new_save_seed|Tambah Item ID Baru||10|"
+    lines[#lines+1] = "add_button|df_btn_add_save_seed|`w+ Tambah ke Save Seed List|noflags|0|0|"
+    if totalPages > 1 then
+        if page > 1 then
+            lines[#lines+1] = "add_button|df_btn_save_seed_prev|`w< Prev Page|noflags|0|0|"
+        end
+        if page < totalPages then
+            lines[#lines+1] = "add_button|df_btn_save_seed_next|`wNext Page >|noflags|0|0|"
+        end
+    end
+    lines[#lines+1] = "add_button|df_btn_reset_save_seed|`wReset Default (3, 15, 5, 11)|noflags|0|0|"
+    lines[#lines+1] = "add_button|df_btn_back_storage|`wBack|noflags|0|0|"
+    lines[#lines+1] = "end_dialog|df_save_seeds|Close||"
+    showClientDialog(table.concat(lines, "\n"))
+end
+
+-- 2.5 Trash List (Compact, Pagination 5 per Page, Zero Scrollbar)
+DLG.showDFTrashListDialog = function(page)
+    local list = getConfiguredTrashItemList()
+    local totalItems = #list
+    local perPage = 5
+    local totalPages = math.max(1, math.ceil(totalItems / perPage))
+    page = math.max(1, math.min(totalPages, tonumber(page) or DLG.trash_page or 1))
+    DLG.trash_page = page
+
+    local autoTrashStatus = CFG.auto_trash_junk and "`2(ON)" or "`4(OFF)"
+    local trashThresh = math.max(10, tonumber(CFG.trash_threshold) or 150)
+
+    local lines = {
+        "set_default_color|`o",
+        "add_quick_exit|",
+        "add_label_with_icon|big|`wTrash List (Auto-Trash)``|left|18|",
+        "add_spacer|small|",
+        "add_textbox|`p------------------------------------------------------------|left|",
+        string.format("add_textbox|`wStatus: Auto-Trash %s `p- `wThreshold: `2(>= %d)|left|", autoTrashStatus, trashThresh),
+        string.format("add_textbox|`wTotal Trash Items: `2(%d Item) `p- `wPage `2(%d/%d)|left|", totalItems, page, totalPages),
+        "add_textbox|`p------------------------------------------------------------|left|",
+        "add_spacer|small|"
+    }
+
+    if totalItems == 0 then
+        lines[#lines+1] = "add_textbox|`4(Kosong) `wBelum ada item trash terdaftar.|left|"
+    else
+        local startIdx = (page - 1) * perPage + 1
+        local endIdx = math.min(totalItems, startIdx + perPage - 1)
+        for i = startIdx, endIdx do
+            local id = list[i]
+            local name = ITEM_NAME_CACHE[id] or resolveItemName(id) or ("Item #" .. tostring(id))
+            local bpCount = getInvCount(id)
+            lines[#lines+1] = string.format("add_textbox|`p- `w#%d. `b%s `2(ID: %d) `p[Tas: %d]|left|", i, name, id, bpCount)
+            lines[#lines+1] = string.format("add_button|df_del_trash_%d|`4Delete Trash (#%d)|noflags|0|0|", i, i)
+        end
+    end
+
+    lines[#lines+1] = "add_spacer|small|"
+    lines[#lines+1] = "add_textbox|`p------------------------------------------------------------|left|"
+    lines[#lines+1] = string.format("add_button|df_btn_toggle_trash|`wToggle Auto-Trash %s|noflags|0|0|", CFG.auto_trash_junk and "`4(Turn OFF)" or "`2(Turn ON)")
+    lines[#lines+1] = string.format("add_text_input|df_in_trash_thresh|Trash Threshold (>=)|%d|5|", trashThresh)
+    lines[#lines+1] = "add_text_input|df_in_new_trash_id|Tambah Item ID Sampah||10|"
+    lines[#lines+1] = "add_button|df_btn_add_trash_id|`w+ Tambah / Simpan Trash|noflags|0|0|"
+    if totalPages > 1 then
+        if page > 1 then
+            lines[#lines+1] = "add_button|df_btn_trash_prev|`w< Prev Page|noflags|0|0|"
+        end
+        if page < totalPages then
+            lines[#lines+1] = "add_button|df_btn_trash_next|`wNext Page >|noflags|0|0|"
+        end
+    end
+    lines[#lines+1] = "add_button|df_btn_reset_trash_id|`wReset Default Trash (4, 14, 10)|noflags|0|0|"
+    lines[#lines+1] = "add_button|df_btn_back_storage|`wBack|noflags|0|0|"
+    lines[#lines+1] = "end_dialog|df_trash_list|Close||"
     showClientDialog(table.concat(lines, "\n"))
 end
 
@@ -7504,6 +7671,12 @@ local function handleDFDialogReturn(pkt)
         elseif btn == "df_btn_open_seed_stor" or pkt:find("buttonClicked|df_btn_open_seed_stor", 1, true) then
             DLG.showDFSeedStorageDialog()
             return true
+        elseif btn == "df_btn_open_save_seed_list" or pkt:find("buttonClicked|df_btn_open_save_seed_list", 1, true) then
+            DLG.showDFSaveSeedListDialog(1)
+            return true
+        elseif btn == "df_btn_open_trash_list" or pkt:find("buttonClicked|df_btn_open_trash_list", 1, true) then
+            DLG.showDFTrashListDialog(1)
+            return true
         elseif btn == "df_btn_open_thresh_stor" or pkt:find("buttonClicked|df_btn_open_thresh_stor", 1, true) then
             DLG.showDFStorageThreshDialog()
             return true
@@ -7672,6 +7845,121 @@ local function handleDFDialogReturn(pkt)
         end
         return true
 
+    -- Save Seed List Manager
+    elseif dName == "df_save_seeds" or pkt:find("dialog_name|df_save_seeds", 1, true) then
+        local delIdx = btn:match("^df_del_save_seed_(%d+)$") or pkt:match("buttonClicked|df_del_save_seed_(%d+)")
+        if delIdx then
+            local idx = tonumber(delIdx)
+            local list = getConfiguredSaveItemList()
+            if idx and idx >= 1 and idx <= #list then
+                local removedId = table.remove(list, idx)
+                setSaveItemListFromTable(list)
+                persistConfig()
+                if sendNotification then pcall(sendNotification, "Dihapus dari Save Seed: " .. resolveItemName(removedId)) end
+            end
+            DLG.showDFSaveSeedListDialog(DLG.save_seed_page)
+            return true
+        elseif btn == "df_btn_add_save_seed" or pkt:find("buttonClicked|df_btn_add_save_seed", 1, true) then
+            local rawId = getVal("df_in_new_save_seed")
+            local newId = math.floor(tonumber(rawId) or 0)
+            if newId > 0 then
+                local list = getConfiguredSaveItemList()
+                local exists = false
+                for _, v in ipairs(list) do if v == newId then exists = true; break end end
+                if not exists then
+                    table.insert(list, newId)
+                    setSaveItemListFromTable(list)
+                    persistConfig()
+                    if sendNotification then pcall(sendNotification, "Ditambah ke Save Seed: " .. resolveItemName(newId)) end
+                else
+                    if sendNotification then pcall(sendNotification, resolveItemName(newId) .. " sudah ada di daftar!") end
+                end
+            elseif rawId and rawId ~= "" then
+                if sendNotification then pcall(sendNotification, "Item ID harus angka > 0!") end
+            end
+            DLG.showDFSaveSeedListDialog(DLG.save_seed_page)
+            return true
+        elseif btn == "df_btn_reset_save_seed" or pkt:find("buttonClicked|df_btn_reset_save_seed", 1, true) then
+            CFG.save_item_list_str = "3,15,5,11"
+            persistConfig()
+            if sendNotification then pcall(sendNotification, "Save Seed List direset ke default (Dirt, Cave, Lava, Rock)!") end
+            DLG.showDFSaveSeedListDialog(1)
+            return true
+        elseif btn == "df_btn_save_seed_prev" or pkt:find("buttonClicked|df_btn_save_seed_prev", 1, true) then
+            DLG.showDFSaveSeedListDialog(DLG.save_seed_page - 1)
+            return true
+        elseif btn == "df_btn_save_seed_next" or pkt:find("buttonClicked|df_btn_save_seed_next", 1, true) then
+            DLG.showDFSaveSeedListDialog(DLG.save_seed_page + 1)
+            return true
+        elseif btn == "df_btn_back_storage" or pkt:find("buttonClicked|df_btn_back_storage", 1, true) then
+            DLG.showDFStorageDialog()
+            return true
+        end
+        return true
+
+    -- Trash List Manager
+    elseif dName == "df_trash_list" or pkt:find("dialog_name|df_trash_list", 1, true) then
+        local delIdx = btn:match("^df_del_trash_(%d+)$") or pkt:match("buttonClicked|df_del_trash_(%d+)")
+        if delIdx then
+            local idx = tonumber(delIdx)
+            local list = getConfiguredTrashItemList()
+            if idx and idx >= 1 and idx <= #list then
+                local removedId = table.remove(list, idx)
+                setTrashListFromTable(list)
+                persistConfig()
+                if updateTrashDisplayList then pcall(updateTrashDisplayList) end
+                if sendNotification then pcall(sendNotification, "Dihapus dari Trash: " .. resolveItemName(removedId)) end
+            end
+            DLG.showDFTrashListDialog(DLG.trash_page)
+            return true
+        elseif btn == "df_btn_toggle_trash" or pkt:find("buttonClicked|df_btn_toggle_trash", 1, true) then
+            CFG.auto_trash_junk = not CFG.auto_trash_junk
+            persistConfig()
+            if sendNotification then pcall(sendNotification, "Auto-Trash: " .. (CFG.auto_trash_junk and "ON" or "OFF")) end
+            DLG.showDFTrashListDialog(DLG.trash_page)
+            return true
+        elseif btn == "df_btn_add_trash_id" or pkt:find("buttonClicked|df_btn_add_trash_id", 1, true) then
+            local thresh = getNum("df_in_trash_thresh", 0)
+            if thresh and thresh >= 10 and thresh <= 200 then
+                CFG.trash_threshold = thresh
+            end
+            local rawId = getVal("df_in_new_trash_id")
+            local newId = math.floor(tonumber(rawId) or 0)
+            if newId > 0 then
+                local list = getConfiguredTrashItemList()
+                local exists = false
+                for _, v in ipairs(list) do if v == newId then exists = true; break end end
+                if not exists then
+                    table.insert(list, newId)
+                    setTrashListFromTable(list)
+                    if updateTrashDisplayList then pcall(updateTrashDisplayList) end
+                    if sendNotification then pcall(sendNotification, "Ditambah ke Trash: " .. resolveItemName(newId)) end
+                else
+                    if sendNotification then pcall(sendNotification, resolveItemName(newId) .. " sudah ada di Trash!") end
+                end
+            end
+            persistConfig()
+            DLG.showDFTrashListDialog(DLG.trash_page)
+            return true
+        elseif btn == "df_btn_reset_trash_id" or pkt:find("buttonClicked|df_btn_reset_trash_id", 1, true) then
+            CFG.trash_list_str = "4,14,10"
+            persistConfig()
+            if updateTrashDisplayList then pcall(updateTrashDisplayList) end
+            if sendNotification then pcall(sendNotification, "Trash List direset ke default (Lava, Cave, Rock)!") end
+            DLG.showDFTrashListDialog(1)
+            return true
+        elseif btn == "df_btn_trash_prev" or pkt:find("buttonClicked|df_btn_trash_prev", 1, true) then
+            DLG.showDFTrashListDialog(DLG.trash_page - 1)
+            return true
+        elseif btn == "df_btn_trash_next" or pkt:find("buttonClicked|df_btn_trash_next", 1, true) then
+            DLG.showDFTrashListDialog(DLG.trash_page + 1)
+            return true
+        elseif btn == "df_btn_back_storage" or pkt:find("buttonClicked|df_btn_back_storage", 1, true) then
+            DLG.showDFStorageDialog()
+            return true
+        end
+        return true
+
     -- --- D. LOCK & CONFIG ---
     elseif dName == "df_lock" or pkt:find("dialog_name|df_lock", 1, true) then
         if btn == "df_btn_open_wl_cfg" or pkt:find("buttonClicked|df_btn_open_wl_cfg", 1, true) then
@@ -7822,6 +8110,8 @@ _G.showDFToolStorageDialog = DLG.showDFToolStorageDialog
 _G.showDFToolStorageListDialog = DLG.showDFToolStorageListDialog
 _G.showDFSeedStorageDialog = DLG.showDFSeedStorageDialog
 _G.showDFSeedStorageListDialog = DLG.showDFSeedStorageListDialog
+_G.showDFSaveSeedListDialog = DLG.showDFSaveSeedListDialog
+_G.showDFTrashListDialog = DLG.showDFTrashListDialog
 _G.showDFStorageThreshDialog = DLG.showDFStorageThreshDialog
 _G.showDFLockDialog = DLG.showDFLockDialog
 _G.showDFWLConfigDialog = DLG.showDFWLConfigDialog
@@ -7837,17 +8127,21 @@ openWorldListManagerDialog = DLG.showDFWorldsDialog
 openPasteWorldListDialog = DLG.showDFBatchWorldDialog
 openUnifiedToolManager = DLG.showDFToolStorageDialog
 openUnifiedSeedManager = DLG.showDFSeedStorageDialog
+openTrashListManagerDialog = DLG.showDFTrashListDialog
 openEditWorldEntryDialog = function(idx) return DLG.showDFWorldListDialog(1) end
 openEditToolEntryDialog = function(idx) return DLG.showDFToolStorageDialog() end
 openEditSeedEntryDialog = function(idx) return DLG.showDFSeedStorageDialog() end
+openEditTrashEntryDialog = function(idx) return DLG.showDFTrashListDialog(1) end
 
 _G.openWorldListManagerDialog = DLG.showDFWorldsDialog
 _G.openPasteWorldListDialog = DLG.showDFBatchWorldDialog
 _G.openUnifiedToolManager = DLG.showDFToolStorageDialog
 _G.openUnifiedSeedManager = DLG.showDFSeedStorageDialog
+_G.openTrashListManagerDialog = DLG.showDFTrashListDialog
 _G.openEditWorldEntryDialog = function(idx) return DLG.showDFWorldListDialog(1) end
 _G.openEditToolEntryDialog = function(idx) return DLG.showDFToolStorageDialog() end
 _G.openEditSeedEntryDialog = function(idx) return DLG.showDFSeedStorageDialog() end
+_G.openEditTrashEntryDialog = function(idx) return DLG.showDFTrashListDialog(1) end
 
 -- Central Packet Hook untuk Dialog DF
 local function dfDialogOnSendPacket(arg1, arg2)
